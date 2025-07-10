@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lineage-job-airflow
+spec:
+  restartPolicy: Never
+  containers:
+  - name: main
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 2
+        memory: 10Gi
+      requests:
+        cpu: 2
+        memory: 8Gi
+    env:
+      - name: CATALOG_HOST
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_HOST
+            name: database-credentials
+      - name: CATALOG_USER
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_USER
+            name: database-credentials
+      - name: CATALOG_PASS
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_PASS
+            name: database-credentials
+      - name: NEO4J_HOST
+        valueFrom:
+          secretKeyRef:
+            key: NEO4J_HOST
+            name: database-credentials
+      - name: NEO4J_USER
+        valueFrom:
+          secretKeyRef:
+            key: NEO4J_USER
+            name: database-credentials
+      - name: NEO4J_PASS
+        valueFrom:
+          secretKeyRef:
+            key: NEO4J_PASS
+            name: database-credentials
+      - name: GITLAB_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: GITLAB_API_TOKEN
+      - name: SLACK_WEBHOOK_URL
+        valueFrom:
+          secretKeyRef:
+            name: avails-monitor-slack
+            key: SLACK_WEBHOOK_URL
+      - name: OTEL_EXPORTER_OTLP_METRICS_INSECURE
+        value: true
+      - name: TASKSERVICE_USER
+        valueFrom:
+          secretKeyRef:
+            key: TASKSERVICE_USER
+            name: data-mover-credentials
+      - name: TASKSERVICE_PASS
+        valueFrom:
+          secretKeyRef:
+            key: TASKSERVICE_PASS
+            name: data-mover-credentials
+      - name: LOGWORKFLOW_HOST
+        valueFrom:
+          secretKeyRef:
+            key: LOGWORKFLOW_HOST
+            name: data-mover-credentials
+      - name: TTDGLOBAL_HOST
+        valueFrom:
+          secretKeyRef:
+            key: TTDGLOBAL_HOST
+            name: data-mover-credentials
+      - name: CATALOG_HOST_V2
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_HOST_V2
+            name: database-credentials-v2
+      - name: CATALOG_USER_V2
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_USER_V2
+            name: database-credentials-v2
+      - name: CATALOG_PASS_V2
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_PASS_V2
+            name: database-credentials-v2
+      - name: CATALOG_DB_V2
+        valueFrom:
+          secretKeyRef:
+            key: CATALOG_DB_V2
+            name: database-credentials-v2
+      - name: LOOKBACK_DAYS_FOR_NEW_MIGRATION_PAIRS
+        value: "30"
+      - name: VERTICA_USER
+        valueFrom:
+          secretKeyRef:
+            key: VERTICA_USER
+            name: vertica-db-credentials
+      - name: VERTICA_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: VERTICA_PASSWORD
+            name: vertica-db-credentials
+      - name: VERTICA_HOST
+        valueFrom:
+          secretKeyRef:
+            key: VERTICA_HOST
+            name: vertica-db-credentials
+  imagePullSecrets:
+  - name: use-docker

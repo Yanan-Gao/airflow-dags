@@ -1,0 +1,62 @@
+# This file defines owners of files and directories in the repository.
+#
+# There are nuances of how the ownership rules evaluated in GitLab. To list some:
+# * For using a team group in this file, it should be a member of the airflow-dags project. It's ignored otherwise.
+#   See page https://gitlab.adsrvr.org/thetradedesk/teams/dataproc/airflow-dags/-/project_members?tab=groups
+# * For Code Owners widget in GitLab web UI to correctly display folder's owners in addition to file's owners,
+#   the folder must have a separate entry without the trailing slash in this file.
+# * A folder with owners from multiple Sections of this file requires an approval from an owner from each section by default.
+#
+# For more information see https://docs.gitlab.com/ee/user/project/codeowners/
+
+[Core stuff, DATAPROC/AIFUN managed, use #scrum-dp-dataproc-mergerequest for approvals request] @thetradedesk/teams/dataproc @thetradedesk/teams/aifun
+# Protecting this because it's used by multiple DAGs. The impact of changes to DAG topology need to be considered.
+/*
+/.run/
+/.idea/
+/airflow-local/
+/airflow-prodtest/
+/ci_docker/
+/code_tool_config/
+/config/
+/docs/
+/local_tools/
+/plugins/
+/src/ttd/
+/src/plugins/
+/src/datasources/
+/tests/ttd/
+.gitlab-ci.yml
+CODEOWNERS @thetradedesk/teams/dataproc
+README.md @thetradedesk/teams/dataproc
+run_tools.sh @thetradedesk/teams/dataproc
+
+# IDNT managed subfolder of ttd. This should be an exclusion rule "!" but it's only available since GitLab 17.9
+# See https://gitlab.com/gitlab-org/gitlab/-/issues/41914#note_1341278777
+/src/ttd/identity_graphs @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/src/ttd/identity_graphs/ @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/tests/ttd/identity_graphs @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/tests/ttd/identity_graphs/ @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+
+[DATAPROC DAGs, use #scrum-dp-dataproc-mergerequest for approvals request] @thetradedesk/teams/dataproc
+/src/dags/dataproc/
+
+[PDG DAGs, use #scrum-pdg-mr-tracking for approvals request] @zach.bartholomew @guofang.li @v-matias.katz @mickey.lehtman @thetradedesk/teams/pdg
+/src/dags/jobs/spark_jobs/data_governance/
+
+[PSR managed, use #scrum-psr-mergerequest for approvals request]
+/src/dags/psr/ @thetradedesk/teams/psr
+
+[IDNT managed. Please request reviews in channel scrum-idnt-codereview] @thetradedesk/teams/idnt
+/src/dags/idnt
+/src/dags/idnt/
+/tests/dags/idnt
+/tests/dags/idnt/
+# The identity graphs' client is located in the ttd folder rather than dags/idnt for discoverability and so the import
+# statements in consumers' DAGs make sense. This is owned by the IDNT team for three reasons - to protect the consumers
+# from potentially huge impact of changing client's configuration, to prevent introduction of graphs not intented for use
+# outside the IDNT team and to allow the IDNT team make changes such as migrations or new features quickly.
+/src/ttd/identity_graphs @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/src/ttd/identity_graphs/ @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/tests/ttd/identity_graphs @thetradedesk/teams/idnt @thetradedesk/teams/dataproc
+/tests/ttd/identity_graphs/ @thetradedesk/teams/idnt @thetradedesk/teams/dataproc

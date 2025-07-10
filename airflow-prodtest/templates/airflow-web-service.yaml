@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.name }}
+  annotations:
+    gitlab/ref: {{ .Values.ref }}
+    gitlab/user-login: {{ .Values.user_login }}
+    gitlab/mr-url: {{ .Values.mr_url }}
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: {{ .Values.name }}
+    component: airflow
+  type: ClusterIP

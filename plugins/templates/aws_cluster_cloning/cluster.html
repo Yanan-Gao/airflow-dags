@@ -1,0 +1,111 @@
+{% extends "appbuilder/base.html" %}
+
+{% block head_css %}
+    {{ super() }}
+    <style type="text/css">
+        {#html, body, .container, .row {
+            height: 100%;
+        }#}
+
+        .row {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .steps_section {
+            display: none;
+        }
+
+        body:has(#include_steps:checked) {
+            .steps_section {
+                display: initial;
+            }
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+    <h1>AWS EMR Production account cloning service</h1>
+    <div style="display: flex; flex-direction: row; justify-content: normal;">
+        <form action="/awsemrclusterclone/cluster" method="get" class="form-inline">
+            <div class="form-group">
+                <label for="cluster_id">Cluster ID:</label>
+                <input type="text" class="form-control" name="cluster_id" id="cluster_id" placeholder="j-XXXXXXXXXXXXX"
+                       value="{{ cluster_id }}"/>
+            </div>
+            <button type="submit" class="btn btn-success">Find cluster</button>
+        </form>
+
+        {% if cluster_desc %}
+            <div style="margin: 0 20px; flex:auto;">
+                <h5>Cluster description:</h5>
+                <pre style="height: 30vh; min-height: 20em;"><code>{{ cluster_desc }}</code></pre>
+            </div>
+        {% endif %}
+    </div>
+    {% if cluster_id %}
+        <div style="display: flex; flex-direction: row; justify-content: normal; background-color: #f4fbff; padding: 10px; border-radius: 6px;">
+            <form action="/awsemrclusterclone/clone" method="post" style="flex-shrink: 0; flex-grow: 1;">
+                <div class="row">
+                    <div class="form-group form-row">
+                        <label for="emr_version" class="col-sm-2 col-form-label">EMR Version:</label>
+                        <div class="col-sm-10">
+                            <select class="form-control" name="emr_version" id="emr_version">
+                                {% for version in emr_versions %}
+                                    <option value="{{ version.emr_release_label }}" {{ "selected" if version.emr_release_label == emr_release_label else "" }}>
+                                        {{ version.emr_release_label }} (Spark: {{ version.spark_version.__str__() }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="form-check form-group">
+                        <h4 class="col-sm-2">Steps:</h4>
+                        <div class="col-sm-10">
+                            <div class="form-check form-check-inline">
+                                <input type="checkbox" name="include_steps" id="include_steps" class="form-check-input"/>
+                                <label for="include_steps" class="col-check-label">Include steps</label>
+                                <small>(choose this if you want all your Spark steps added to cloned cluster)</small></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="steps_section">
+                    {% for step in steps %}
+                        <div class="row">
+                            <div class="form-group from-row">
+                                <label style="vertical-align: top" class="col-sm-2 col-form-label">Step {{ loop.index }}:</label>
+                                <div class="col-sm-10">
+                                            <textarea class="form-control" name="steps" id="step{{ loop.index }}"
+                                                      rows="10">{{ step }}</textarea>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+                <div style="text-align: center;">
+                    <button type="submit" class="btn btn-primary">Clone cluster</button>
+                </div>
+                <input type="hidden" name="cluster_id" value="{{ cluster_id }}"/>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            </form>
+        </div>
+    {% endif %}
+
+    <div style="margin-top: auto;">
+        <h2>Notes</h2>
+        <p>
+            Cluster will be cloned into Dev-Compute AWS (503911722519)
+            account (you will need to use AWS SSO to auth into this account to see the cluster)
+            <br/>
+            Cluster will preserve all the specs except for:
+        </p>
+        <ul>
+            <li>Tags - Environment tag will be changed to 'dev'</li>
+            <li>Name of the cluster - will have 'Test' suffix</li>
+            <li>Service accounts - Instance Profile and Service role are going to be adjusted to 'dev' variants</li>
+            <li>Steps - 'ttd.env' argument will be changed to 'prodTest' to allow execution of the Spark job in dev account</li>
+        </ul>
+    </div>
+{% endblock %}

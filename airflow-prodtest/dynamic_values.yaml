@@ -1,0 +1,7 @@
+# Overwritten by CI values
+
+name: $CI_ENVIRONMENT_SLUG
+ref: $CI_COMMIT_REF_NAME
+url: $CI_ENVIRONMENT_URL
+user_login: $GITLAB_USER_LOGIN
+mr_url: mr_url

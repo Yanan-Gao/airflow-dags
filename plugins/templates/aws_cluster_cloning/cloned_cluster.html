@@ -1,0 +1,8 @@
+{% extends "appbuilder/base.html" %}
+{% block content %}
+    Cloning cluster {{ cluster_id }} <br/>
+    Cluster has been cloned to
+    <a href="https://us-east-1.console.aws.amazon.com/emr/home?region=us-east-1#/clusterDetails/{{new_cluster_id}}"
+       target="_blank">{{ new_cluster_id }}</a>
+    <pre>{{ result }}</pre>
+{% endblock %}

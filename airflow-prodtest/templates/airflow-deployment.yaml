@@ -1,0 +1,138 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: {{ .Values.name }}
+  labels:
+    app: {{ .Values.name }}
+    component: airflow
+  annotations:
+    gitlab/ref: {{ .Values.ref }}
+    gitlab/user-login: {{ .Values.user_login }}
+    gitlab/mr-url: {{ .Values.mr_url }}
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}
+      component: airflow
+  template:
+    metadata:
+      name: {{ .Values.name }}
+      labels:
+        app: {{ .Values.name }}
+        component: airflow
+      annotations:
+        sumologic.com/include: "true"
+        sumologic.com/sourceCategory: "airflow2-prodtest"
+        sumologic.com/sourceName: {{ .Values.name }}
+        sumologic.com/kubernetes_meta_reduce: "true"
+        gitlab/ref: {{ .Values.ref }}
+        gitlab/user-login: {{ .Values.user_login }}
+        gitlab/mr-url: {{ .Values.mr_url }}
+    spec:
+      securityContext:
+        runAsUser: 0
+        fsGroup: 50000
+      volumes:
+        - name: airflow-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.name }}
+      serviceAccountName: airflow2-service-account
+      initContainers:
+        - name: db-initialisation
+          image: {{ .Values.image }}
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 50000
+          command: [ "/bin/sh", "-c" ]
+          args: [ "airflow db migrate && airflow users create -u airflow -f first -l last -e admin@adsrvr.org -p airflow -r Admin && airflow pools set k8s_executor 256 Temp" ]
+          resources:
+            requests:
+              cpu: 300m
+              memory: 100Mi
+            limits:
+              memory: 200Mi
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@{{ .Values.name }}-db.airflow2-prodtest.svc.cluster.local:5432/airflow
+      containers:
+        - name: scheduler
+          image: {{ .Values.image }}
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 50000
+          command: [ "/bin/sh", "-c" ]
+          args: [ "sleep 10 && airflow scheduler" ]
+          env:
+          {{- range .Values.common_env_vars }}
+            - name: {{ .name }}
+              value: "{{ .value }}"
+          {{- end }}
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@{{ .Values.name }}-db.airflow2-prodtest.svc.cluster.local:5432/airflow
+            - name: AIRFLOW_VAR_BASE_URL
+              value: 'https://{{ .Values.url }}'
+            - name: AIRFLOW_VAR_USER_LOGIN
+              value: "{{ .Values.user_login }}"
+            - name: AIRFLOW__WEBSERVER__INSTANCE_NAME
+              value: "{{ .Values.ref }}" # The title that appears above the DAGs
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 3Gi
+              ephemeral-storage: 3Gi
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /mnt/efs
+
+        - name: webserver
+          image: {{ .Values.image }}
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 50000
+          command: [ "/bin/sh", "-c" ]
+          args: [ "sleep 10 && airflow webserver" ]
+          ports:
+            - containerPort: 8080
+              hostPort: 8080
+              protocol: TCP
+              name: webserver-port
+          env:
+          {{- range .Values.common_env_vars }}
+            - name: {{ .name }}
+              value: "{{ .value }}"
+          {{- end }}
+            - name: AIRFLOW_VAR_USER_LOGIN
+              value: "{{ .Values.user_login }}"
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@{{ .Values.name }}-db.airflow2-prodtest.svc.cluster.local:5432/airflow
+            - name: AIRFLOW__WEBSERVER__INSTANCE_NAME
+              value: "{{ .Values.ref }}"
+          resources:
+            requests:
+              cpu: 300m
+              memory: 1Gi
+            limits:
+              memory: 1200Mi
+              ephemeral-storage: 3Gi
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /mnt/efs
+        - name: filesystem
+          image: proxy.docker.adsrvr.org/alpine:3.20
+          command: ["/bin/sh", "-c"]
+          args:
+            - "apk add rsync && mkdir -p /mnt/efs/airflow-dags && mkdir -p /mnt/efs/logs && chmod -R go+rwx /mnt/efs && while true; do sleep 10; done;"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 100Mi
+            limits:
+              memory: 300Mi
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /mnt/efs

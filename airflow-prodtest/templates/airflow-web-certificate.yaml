@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.name }}
+  annotations:
+    gitlab/ref: {{ .Values.ref }}
+    gitlab/user-login: {{ .Values.user_login }}
+    gitlab/mr-url: {{ .Values.mr_url }}
+spec:
+  commonName: {{ .Values.url }}
+  dnsNames:
+    - {{ .Values.url }}
+  duration: 240h
+  issuerRef:
+    kind: ClusterIssuer
+    name: vault-issuer
+  renewBefore: 120h
+  secretName: {{ .Values.name}}    # This is a reference to a Kubernetes Secret resource that the certificate material will be stored
