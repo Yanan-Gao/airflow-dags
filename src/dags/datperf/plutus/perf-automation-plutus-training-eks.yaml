@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plutus-training-test-eks-airflow
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    karpenter.k8s.aws/instance-gpu-name: a10g
+  containers:
+  - name: main
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 24000m
+        memory: 64Gi
+        nvidia.com/gpu: "1"
+        ephemeral-storage: "10Gi"
+      requests:
+        cpu: 18000m
+        memory: 32Gi
+        nvidia.com/gpu: "1"
+        ephemeral-storage: "10Gi"
+    volumeMounts:
+    - mountPath: /var/tmp/
+      name: scratch-volume
+  volumes:
+    - name: scratch-volume
+      ephemeral:
+        volumeClaimTemplate:
+          spec:
+            accessModes: [ "ReadWriteOnce" ]
+            resources:
+              requests:
+                storage: 1000G
+            storageClassName: io2
+  imagePullSecrets:
+  - name: use-docker
+  tolerations:
+  - key: nodegroup
+    operator: Equal
+    value: gpu-nodes
+    effect: NoSchedule

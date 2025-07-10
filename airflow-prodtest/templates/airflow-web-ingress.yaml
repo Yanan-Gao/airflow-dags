@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.url }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    gitlab/ref: {{ .Values.ref }}
+    gitlab/user-login: {{ .Values.user_login }}
+    gitlab/mr-url: {{ .Values.mr_url }}
+  name: {{ .Values.name }}
+spec:
+  ingressClassName: nginx-internal
+  tls:
+    - secretName: {{ .Values.name }}
+      hosts:
+        - {{ .Values.url }}
+  rules:
+    - host: {{ .Values.url }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.name }}
+                port:
+                  number: 80

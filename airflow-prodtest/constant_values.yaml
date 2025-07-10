@@ -1,0 +1,23 @@
+common_env_vars:
+  - name: AIRFLOW__CORE__EXECUTOR
+    value: LocalExecutor
+  - name: AIRFLOW__CORE__DAGS_FOLDER
+    value: /opt/airflow/src
+  - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
+    value: "True"
+  - name: AIRFLOW__WEBSERVER__WORKERS
+    value: "1"
+  - name: AIRFLOW__CORE__PARALLELISM
+    value: "5"
+  - name: AIRFLOW__SECRETS__BACKEND
+    value: ttd.secrets.vault_secrets_backend.VaultSecretsBackend
+  - name: AIRFLOW__WEBSERVER__NAVBAR_COLOR
+    value: "#D1D6E9"
+  - name: AIRFLOW__WEBSERVER__DAG_ORIENTATION
+    value: "TB" # (TB=top to bottom)
+  - name: AIRFLOW__WEBSERVER__SHOW_TRIGGER_FORM_IF_NO_PARAMS
+    value: "true"
+  - name: AIRFLOW__API__AUTH_BACKENDS
+    value: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+
+image: dev.docker.adsrvr.org/dataproc/ttd-airflow:prod-latest

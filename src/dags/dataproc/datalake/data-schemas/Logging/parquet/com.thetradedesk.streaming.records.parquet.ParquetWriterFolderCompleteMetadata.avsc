@@ -1,0 +1,34 @@
+{
+    "type": "record",
+    "name": "ParquetWriterFolderCompleteMetadata",
+    "namespace": "com.thetradedesk.streaming.records.parquet",
+    "doc": "Metadata about the completion of a bucket of files completed by the writer.",
+    "fields": [
+        {
+            "name": "FirstEventTime",
+            "doc": "First (minimum) Recorded Event Timestamp for the bucket",
+            "type": {
+                "type": "long",
+                "logicalType": "timestamp-millis"
+            }
+        },
+        {
+            "name": "LastEventTime",
+            "doc": "First (maximum) Recorded Event Timestamp for the bucket",
+            "type": {
+                "type": "long",
+                "logicalType": "timestamp-millis"
+            }
+        },
+        {
+            "name": "EventCount",
+            "doc": "Count of the Recorded Events for the bucket",
+            "type": "long"
+        },
+        {
+            "name": "SourceProcess",
+            "doc": "Identifier of the process the created the control record.",
+            "type": "string"
+        }
+    ]
+}

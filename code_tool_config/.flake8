@@ -1,0 +1,28 @@
+[flake8]
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    bin,
+    lib,
+    src/ttd/el_dorado/v2,
+    src/dags/fineng/edw/autoscheduler
+    src/dags/fineng/edw
+max-line-length = 140
+ignore =
+    # Continuation line over-indented for hanging indent
+    E126,
+    # Unexpected spaces around keyword / parameter equals
+    E251,
+    # Line too long
+    E501,
+    # Do not assign a lambda expression, use a def
+    E731,
+    # Local variable name is assigned to but never used
+    F841,
+    # Line break occurred before a binary operator
+    W503,
+    # Line break occurred after a binary operator
+    W504,
+    # too many leading '#' for block comment
+    E266,

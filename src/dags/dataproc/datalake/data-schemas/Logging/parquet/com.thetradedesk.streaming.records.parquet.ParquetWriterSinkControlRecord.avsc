@@ -1,0 +1,80 @@
+{
+    "type": "record",
+    "name": "ParquetWriterSinkControlRecord",
+    "namespace": "com.thetradedesk.streaming.records.parquet",
+    "doc": "Metadata about a file assumed successfully pushed to the filesystem. This schema is what's used to write the parquet file. So as the schema advances versions, the source messages produced will, and so will the version for writers",
+    "fields": [
+        {
+            "name": "EventType",
+            "doc": "Type of event such as file pushed or folder done expecting files",
+            "type": [
+                "null",
+                {
+                    "type": "enum",
+                    "name": "WriterControlEventType",
+                    "doc": "FilePush: A file has successfully been pushed to the end filesystem, FolderComplete: A folder is suspected to have all the expected files",
+                    "symbols": [
+                        "FilePush",
+                        "FolderComplete"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "EventTime",
+            "doc": "Timestamp of when this record was pushed",
+            "type": {
+                "type": "long",
+                "logicalType": "timestamp-millis"
+            }
+        },
+        {
+            "name": "S3Bucket",
+            "doc": "The bucket to where the file was pushed",
+            "type": "string"
+        },
+        {
+            "name": "S3Key",
+            "doc": "Complete key to the file (or folder) that was pushed to or suspected to be complete",
+            "type": "string"
+        },
+        {
+            "name": "FileSchema",
+            "doc": "Schema used from the messages off the source topic",
+            "type": {
+                "name": "TopicSchema",
+                "doc": "Metadata on the schema used from SchemaRegistry",
+                "type": "record",
+                "fields": [
+                    {"name": "topic", "type": "string"},
+                    {"name": "version", "type": "int"},
+                    {"name": "schemaRegistry", "type": "string"}
+                ]
+            }
+        },
+        {
+            "name": "ParquetFileSchema",
+            "doc": "Schema of the output parquet files. Can either include the avro schema used as is, or a TopicSchema record to indicate to find the schema using the schema registry",
+            "type": [
+                "null",
+                "string",
+                "TopicSchema"
+            ],
+            "default": null
+        },
+        {
+            "name": "CheckpointId",
+            "doc": "Numeric flink CheckpointId looking to complete under which this record was created",
+            "type": "long"
+        },
+        {
+            "name": "ParquetWriterFolderCompleteMetadata",
+            "doc": "Additional metadata for the FolderComplete EventType",
+            "type": [
+                "null",
+                "com.thetradedesk.streaming.records.parquet.ParquetWriterFolderCompleteMetadata"
+            ],
+            "default": null
+        }
+    ]
+}

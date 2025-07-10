@@ -1,0 +1,63 @@
+{% extends "appbuilder/base.html" %}
+{% block content %}
+    <h2>AWS EMR Cluster Log Search</h2>
+        <form action="/awsemrclusterlogs/logs" method="get">
+            <div style="display: flex; gap: 10px">
+                <label for="cluster_id">Cluster ID:</label>
+                <input type="text" name="cluster_id" id="cluster_id" placeholder="j-XXXXXXXXXXXXX" value="{{ cluster_id }}"/>
+                <label for="chosen_region">Region:</label>
+                <select name="chosen_region" id="chosen_region" style="width: 130px; flex-shrink: 0">
+                    {% for region in regions %}
+                    {% if region == chosen_region %}
+                    <option value="{{ region }}" selected>{{ region }} </option>
+                    {% else %}
+                    <option value="{{ region }}">{{ region }} </option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <br>
+            <div>
+                <input type="hidden" name="submitted" value="1">
+                <button>Get cluster logs</button>
+            </div>
+        </form>
+    <br>
+    {% if exception_message %}
+    <h3>Exception message: {{ exception_message }}</h3>
+    <h3>Please check that your cluster and/or region configuration is valid.</h3>
+    {% endif %}
+    {% if cluster_logs %}
+        <h4>Cluster "{{ cluster_id }}" Driver Logs</h4>
+        <h5>Log bucket: "{{ cluster_logs.bucket }}" </h5>
+        <h5>Applications:</h5>
+        {% for app, container_dict in cluster_logs.app_container_logs.items() %}
+        <details>
+            <summary>{{ app.name }}</summary>
+            <h5 style="text-indent: 30px;">Containers:</h5>
+            {% for container, logs in container_dict.items() %}
+            <details style="text-indent: 30px;">
+                <summary>{{ container.name }}</summary>
+                <h5 style="text-indent: 50px;">Files: </h5>
+                {% for log in logs %}
+                <div style="text-indent: 50px;">
+                    {{ log.file_name }}
+                    <form action="/awsemrclusterlogs/download" method="get" style="display: inline;">
+                    <input type="hidden" name="file_name" value="{{ log.file_path }}">
+                    <input type="hidden" name="bucket" value="{{ cluster_logs.bucket }}">
+                    <button type="submit">Download</button>
+                </form>
+                <form action="/awsemrclusterlogs/display_text" method="get" target="_blank" style="display: inline;">
+                    <input type="hidden" name="file_name" value="{{ log.file_path }}">
+                    <input type="hidden" name="bucket" value="{{ cluster_logs.bucket }}">
+                    <button type="submit">Open</button>
+                </form>
+                </div>
+                {% endfor %}
+            </details>
+            {% endfor %}
+        </details>
+            <br>
+        {% endfor %}
+    {% endif %}
+{% endblock %}

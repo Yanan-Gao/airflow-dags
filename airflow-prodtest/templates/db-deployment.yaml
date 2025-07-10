@@ -1,0 +1,59 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: {{ .Values.name }}-db
+  labels:
+    app: {{ .Values.name }}
+    component: db
+  annotations:
+    gitlab/ref: {{ .Values.ref }}
+    gitlab/user-login: {{ .Values.user_login }}
+    gitlab/mr-url: {{ .Values.mr_url }}
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: {{ .Values.name }}
+      component: db
+  template:
+    metadata:
+      name: {{ .Values.name }}-db
+      labels:
+        app: {{ .Values.name }}
+        component: db
+      annotations:
+        gitlab/ref: {{ .Values.ref }}
+        gitlab/user-login: {{ .Values.user_login }}
+        gitlab/mr-url: {{ .Values.mr_url }}
+    spec:
+      containers:
+        - name: postgres
+          image: proxy.docker.adsrvr.org/postgres:15.5
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5432
+              hostPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: airflow
+            - name: POSTGRES_PASSWORD
+              value: airflow
+            - name: POSTGRES_USER
+              value: airflow
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 200Mi
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: db-storage
+              subPath: airflow-pgdata
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.name }}-db
