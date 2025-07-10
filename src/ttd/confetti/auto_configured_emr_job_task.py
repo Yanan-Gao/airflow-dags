@@ -59,7 +59,8 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
     def _init_config_task(self) -> None:
         self._config_task.set_op(
             PythonOperator(
-                task_id=f"prepare_confetti_config_{self.job_name}",
+                task_id=("prepare_confetti_config_"
+                         f"{self.job_name}_{self.task_id}"),
                 python_callable=self._config_callable,
             )
         )
@@ -129,9 +130,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         config_runtime_key = runtime_base + "behavioral_config.yml"
 
         # provide runtime path to the underlying EMR task
-        self._emr_task.eldorado_config_option_pairs_list.append(
-            ("confetti_runtime_config_path", runtime_base)
-        )
+        self._emr_task.eldorado_config_option_pairs_list.append(("confetti_runtime_config_path", runtime_base))
 
         # if a previous run exists, possibly skip or wait for its result
         if self._result_ready_or_wait(aws, runtime_base):
@@ -143,6 +142,3 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         else:
             # config exists but no result after waiting, rewrite to mark this run
             aws.load_string(rendered, key=config_runtime_key, bucket_name=None, replace=True)
-
-
-
