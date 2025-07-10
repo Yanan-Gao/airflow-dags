@@ -16,7 +16,7 @@ from ttd.docker import DockerEmrClusterTask, DockerCommandBuilder, DockerRunEmrT
 from ttd.ec2.emr_instance_types.graphics_optimized.g5 import G5
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.eldorado.aws.emr_job_task import EmrJobTask
+from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
 from ttd.operators.dataset_check_sensor import DatasetCheckSensor
@@ -669,21 +669,35 @@ audience_embedding_merge_cluster_task = EmrClusterTask(
     cluster_auto_termination_idle_timeout_seconds=300
 )
 
-audience_embedding_merge_step = EmrJobTask(
+audience_embedding_merge_step = AutoConfiguredEmrJobTask(
+    group_name="audience",
+    job_name="AudienceCalibrationAndMergeJob",
     name="testEmbeddingMergeJob",
     class_name="com.thetradedesk.audience.jobs.AudienceCalibrationAndMergeJob",
-    additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
-        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
-    ],
-    eldorado_config_option_pairs_list=[
-        ('date', run_date), ('anchorStartDate', '2025-04-14'), ('syntheticIdLength', '2000'), ('ttd.env', f'{override_env}'),
-        ('tmpSenEmbeddingDataS3Path', f'configdata/{override_env}/audience/embedding_temp/RSMV2/{sensitive}/v=1'),
-        ('tmpNonSenEmbeddingDataS3Path', f'configdata/{override_env}/audience/embedding_temp/RSMV2/{non_sensitive}/v=1'),
-        ('embeddingDataS3Path', f'configdata/{override_env}/audience/embedding/RSMV2/v=1'),
-        ('inferenceDataS3Path', f'data/{override_env}/audience/RSMV2/prediction/'), ('AudienceModelPolicyReadableDatasetReadEnv', 'prod')
-    ],
-    executable_path=AUDIENCE_JAR,
-    timeout_timedelta=timedelta(hours=4)
+    emr_job_kwargs=dict(
+        additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
+            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
+        ],
+        eldorado_config_option_pairs_list=[
+            ('date', run_date),
+            ('anchorStartDate', '2025-04-14'),
+            ('syntheticIdLength', '2000'),
+            ('ttd.env', f'{override_env}'),
+            (
+                'tmpSenEmbeddingDataS3Path',
+                f'configdata/{override_env}/audience/embedding_temp/RSMV2/{sensitive}/v=1'
+            ),
+            (
+                'tmpNonSenEmbeddingDataS3Path',
+                f'configdata/{override_env}/audience/embedding_temp/RSMV2/{non_sensitive}/v=1'
+            ),
+            ('embeddingDataS3Path', f'configdata/{override_env}/audience/embedding/RSMV2/v=1'),
+            ('inferenceDataS3Path', f'data/{override_env}/audience/RSMV2/prediction/'),
+            ('AudienceModelPolicyReadableDatasetReadEnv', 'prod'),
+        ],
+        executable_path=AUDIENCE_JAR,
+        timeout_timedelta=timedelta(hours=4),
+    ),
 )
 
 audience_embedding_merge_cluster_task.add_parallel_body_task(audience_embedding_merge_step)

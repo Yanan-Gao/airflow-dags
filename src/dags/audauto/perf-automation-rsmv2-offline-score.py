@@ -7,6 +7,7 @@ from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
 from ttd.ttdenv import TtdEnvFactory
 from ttd.eldorado.aws.emr_pyspark import S3PysparkEmrTask
+from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
 from ttd.eldorado.script_bootstrap_action import ScriptBootstrapAction
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 
@@ -200,11 +201,22 @@ emr_cluster_part1 = utils.create_emr_cluster(
 )
 
 # step 3: generate the model input
-gen_model_input = utils.create_emr_spark_job(
-    "Generate_Model_Input", "com.thetradedesk.audience.jobs.Imp2BrModelInferenceDataGenerator", AUDIENCE_JAR, spark_options_list + [
-        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.4.0"),
-    ], job_setting_list + [("feature_path", feature_path_origin), ("sampling_rate", sampling_rate)], emr_cluster_part1
+gen_model_input = AutoConfiguredEmrJobTask(
+    group_name="audience",
+    job_name="Imp2BrModelInferenceDataGenerator",
+    name="Generate_Model_Input",
+    class_name="com.thetradedesk.audience.jobs.Imp2BrModelInferenceDataGenerator",
+    emr_job_kwargs=dict(
+        additional_args_option_pairs_list=spark_options_list + [
+            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.4.0"),
+        ],
+        eldorado_config_option_pairs_list=job_setting_list
+        + [("feature_path", feature_path_origin), ("sampling_rate", sampling_rate)],
+        executable_path=AUDIENCE_JAR,
+        timeout_timedelta=timedelta(hours=3),
+    ),
 )
+emr_cluster_part1.add_parallel_body_task(gen_model_input)
 
 ########################################################
 # Part 2, wait for model, then proceed
@@ -250,20 +262,39 @@ emb_to_coldstorage = utils.create_emr_spark_job(
 )
 
 # Step 7: dot product
-emb_dot_product = utils.create_emr_spark_job(
-    "Embedding_DotProduct", "com.thetradedesk.audience.jobs.TdidEmbeddingDotProductGeneratorOOS", AUDIENCE_JAR, spark_options_list,
-    job_setting_list + [("seed_emb_path", seed_emb_path), ("sampling_rate", sampling_rate)], emr_cluster_part2
+emb_dot_product = AutoConfiguredEmrJobTask(
+    group_name="audience",
+    job_name="TdidEmbeddingDotProductGeneratorOOS",
+    name="Embedding_DotProduct",
+    class_name="com.thetradedesk.audience.jobs.TdidEmbeddingDotProductGeneratorOOS",
+    emr_job_kwargs=dict(
+        additional_args_option_pairs_list=spark_options_list,
+        eldorado_config_option_pairs_list=job_setting_list
+        + [("seed_emb_path", seed_emb_path), ("sampling_rate", sampling_rate)],
+        executable_path=AUDIENCE_JAR,
+        timeout_timedelta=timedelta(hours=3),
+    ),
 )
+emr_cluster_part2.add_parallel_body_task(emb_dot_product)
 
 # Step 8: apply min max scaling
-score_min_max_scale_population = utils.create_emr_spark_job(
-    "Score_Min_Max_Scale_Population_Score",
-    "com.thetradedesk.audience.jobs.TdidSeedScoreScale",
-    AUDIENCE_JAR,
-    spark_options_list + [("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")],  # skip _SUCCESS file generation
-    job_setting_list + [("sampling_rate", sampling_rate)],
-    emr_cluster_part2
+score_min_max_scale_population = AutoConfiguredEmrJobTask(
+    group_name="audience",
+    job_name="TdidSeedScoreScale",
+    name="Score_Min_Max_Scale_Population_Score",
+    class_name="com.thetradedesk.audience.jobs.TdidSeedScoreScale",
+    emr_job_kwargs=dict(
+        additional_args_option_pairs_list=
+        spark_options_list + [
+            ("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")
+        ],
+        eldorado_config_option_pairs_list=job_setting_list
+        + [("sampling_rate", sampling_rate)],
+        executable_path=AUDIENCE_JAR,
+        timeout_timedelta=timedelta(hours=3),
+    ),
 )
+emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
 
 # Step 9: check data quality
 data_quality_check = utils.create_emr_spark_job(

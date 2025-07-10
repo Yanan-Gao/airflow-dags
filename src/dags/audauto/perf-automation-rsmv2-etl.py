@@ -8,6 +8,7 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
+from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
@@ -211,24 +212,28 @@ def create_rsm_threshold_task(prefix):
     return rsm_thresholds_generation_step
 
 
-def create_rsm_job_task(name, eldorado_config_specific_list) -> EmrJobTask:
+def create_rsm_job_task(name, eldorado_config_specific_list) -> AutoConfiguredEmrJobTask:
     # common config
     eldorado_config_list = [('date', run_date), ('optInSeedType', 'Dynamic'),
                             ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
                             ('AggregatedSeedReadableDatasetReadEnv', policy_table_read_env),
                             ('FeatureStoreReadEnv', feature_store_read_env), ('posNegRatio', '50'), ("ttdWriteEnv", override_env)]
     eldorado_config_list.extend(eldorado_config_specific_list)
-    return EmrJobTask(
+    return AutoConfiguredEmrJobTask(
+        group_name="audience",
+        job_name="RelevanceModelInputGeneratorJob",
         name=name,
         class_name="com.thetradedesk.audience.jobs.modelinput.rsmv2.RelevanceModelInputGeneratorJob",
-        additional_args_option_pairs_list=(
-            copy.deepcopy(spark_options_list) +
-            [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+        emr_job_kwargs=dict(
+            additional_args_option_pairs_list=(
+                copy.deepcopy(spark_options_list)
+                + [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+            ),
+            eldorado_config_option_pairs_list=eldorado_config_list,
+            action_on_failure="CONTINUE",
+            executable_path=AUDIENCE_JAR,
+            timeout_timedelta=timedelta(hours=8),
         ),
-        eldorado_config_option_pairs_list=eldorado_config_list,
-        action_on_failure="CONTINUE",
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=8)
     )
 
 
