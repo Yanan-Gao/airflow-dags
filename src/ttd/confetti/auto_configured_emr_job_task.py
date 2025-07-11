@@ -14,7 +14,7 @@ from ttd.cloud_storages.aws_cloud_storage import AwsCloudStorage
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.tasks.chain import ChainOfTasks
 from ttd.tasks.op import OpTask
-from ttd.ttdenv import TtdEnv, TtdEnvFactory
+from ttd.ttdenv import TtdEnvFactory
 
 
 def resolve_confetti_env(env: str, experiment_name: Optional[str]) -> str:
@@ -88,7 +88,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         exp_dir = f"{self.experiment_name}/" if self.experiment_name else ""
         return (
             f"s3://{self._CONFIG_BUCKET}/configdata/confetti/configs/"
-            f"{self.env.execution_env}/"
+            f"{self.env}/"
             f"{exp_dir}{self.group_name}/{self.job_name}/behavioral_config.yml"
         )
 
@@ -106,7 +106,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
     def _build_runtime_base(self, config_hash: str) -> str:
         return (
             f"s3://{self._CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
-            f"{self.env.execution_env}/{self.group_name}/{self.job_name}/{config_hash}/"
+            f"{self.env}/{self.group_name}/{self.job_name}/{config_hash}/"
         )
 
     def _result_ready_or_wait(self, aws: AwsCloudStorage, runtime_base: str) -> bool:
