@@ -156,7 +156,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
 
         bucket, key = aws._parse_bucket_and_key(config_runtime_key, None)
         if not aws.check_for_key(key, bucket):
-            aws.load_string(rendered, key=config_runtime_key, bucket_name=None, replace=True)
+            aws.load_string(rendered, key=config_runtime_key, bucket_name=bucket, replace=True)
         else:
             # config exists but no result after waiting, rewrite to mark this run
-            aws.load_string(rendered, key=config_runtime_key, bucket_name=None, replace=True)
+            aws.load_string(rendered, key=config_runtime_key, bucket_name=bucket, replace=True)
