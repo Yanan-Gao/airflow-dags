@@ -17,6 +17,25 @@ from ttd.tasks.op import OpTask
 from ttd.ttdenv import TtdEnv, TtdEnvFactory
 
 
+def resolve_confetti_env(env: str, experiment_name: Optional[str]) -> str:
+    """
+    Resolves the environment string based on env and experiment_name.
+
+    Returns one of: "prod", "experiment", or "test".
+    Raises ValueError if in test env and experiment_name is empty.
+    """
+    env_normalized = (env or "").strip().lower()
+    if env_normalized in ("prod", "production"):
+        if not experiment_name:
+            return "prod"
+        else:
+            return "experiment"
+    else:
+        if not experiment_name:
+            raise ValueError("experiment_name is required for test env")
+        return "test"
+
+
 class AutoConfiguredEmrJobTask(ChainOfTasks):
     """Wrap :class:`EmrJobTask` with automatic configuration logic.
 
@@ -36,7 +55,6 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         class_name: str,
         experiment_name: str = "",
         run_date: str = "{{ ds }}",
-        env: Optional[TtdEnv] = None,
         check_timeout: timedelta = timedelta(hours=2),
         emr_job_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -44,7 +62,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         self.job_name = job_name
         self.experiment_name = experiment_name
         self.run_date = run_date
-        self.env = env or TtdEnvFactory.get_from_system()
+        self.env = resolve_confetti_env(TtdEnvFactory.get_from_system().execution_env, experiment_name)
         self.check_timeout = check_timeout
         self.emr_job_kwargs = emr_job_kwargs or {}
 

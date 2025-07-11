@@ -117,8 +117,10 @@ audience_calibration_data_etl_cluster_task = EmrClusterTask(
 ###############################################################################
 audience_rsm_calibration_data_generation_step = AutoConfiguredEmrJobTask(
     group_name="audience",
-    job_name="CalibrationDataGenerator",
-    name="CalibrationDataGenerator",
+    job_name="CalibrationInputDataGeneratorJob",
+    experiment_name="yanan-demo",
+    # env="test", this should be injected by default. TODO update exp from prod.
+    name="CalibrationInputDataGeneratorJob",
     class_name="com.thetradedesk.audience.jobs.CalibrationInputDataGeneratorJob",
     emr_job_kwargs=dict(
         additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
