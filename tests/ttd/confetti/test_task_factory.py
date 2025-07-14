@@ -250,12 +250,14 @@ class FactoryTest(unittest.TestCase):
 
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
-    def test_make_tasks_pushes_xcom(self, mock_get_env, mock_storage):
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
+    def test_make_tasks_pushes_xcom(self, mock_inject, mock_get_env, mock_storage):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         mock_instance = mock_storage.return_value
         mock_instance.read_key.return_value = "hi {date}"
         mock_instance._parse_bucket_and_key.side_effect = lambda k, b: ("b", k)
         mock_instance.check_for_key.return_value = False
+        mock_inject.return_value = "audienceJarPath: bar"
 
         prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
         ctx = {"ds": "2020-01-01", "ti": MagicMock()}
@@ -263,6 +265,7 @@ class FactoryTest(unittest.TestCase):
         ctx["ti"].xcom_pull.return_value = False
         ctx["ti"].xcom_push.assert_any_call(key="runtime_base", value=unittest.mock.ANY)
         ctx["ti"].xcom_push.assert_any_call(key="skip_job", value=False)
+        ctx["ti"].xcom_push.assert_any_call(key="audienceJarPath", value=unittest.mock.ANY)
         should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
         self.assertTrue(should_run)
 

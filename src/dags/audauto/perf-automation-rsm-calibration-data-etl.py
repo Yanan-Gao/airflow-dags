@@ -47,10 +47,6 @@ experiment_suffix = f"/experiment={experiment}" if experiment else ""
 override_env = f"test{experiment_suffix}" if env == "prodTest" else env  # only apply experiment suffix in prodTest
 oos_read_env = override_env
 
-PROD_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
-TEST_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
-AUDIENCE_JAR = PROD_JAR if TtdEnvFactory.get_from_system() == TtdEnvFactory.prod else TEST_JAR
-
 calibration_data_etl_dag = TtdDag(
     dag_id="perf-automation-rsm-v2-calibration-data-etl",
     start_date=datetime(2025, 5, 25, 2, 0),
@@ -141,7 +137,7 @@ audience_rsm_calibration_data_generation_step = EmrJobTask(
             get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="runtime_base"),
         ),
     ],
-    executable_path=AUDIENCE_JAR,
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="audienceJarPath"),
     timeout_timedelta=timedelta(hours=4),
 )
 
