@@ -96,7 +96,8 @@ def _prepare_runtime_config(
     run_date: str,
     experiment: str,
     timeout: timedelta,
-) -> tuple[str, bool]:
+    return_jar_path: bool = False,
+) -> tuple[str, bool] | tuple[str, bool, str]:
     env = _resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment)
     exp_dir = f"{experiment}/" if experiment else ""
     tpl_key = (f"s3://{_CONFIG_BUCKET}/configdata/confetti/configs/"
@@ -106,6 +107,7 @@ def _prepare_runtime_config(
     template = aws.read_key(tpl_key)
     rendered = _render_template(template, {"date": run_date})
     rendered = _inject_audience_jar_path(rendered, aws)
+    jar_path = yaml.safe_load(rendered)["audienceJarPath"]
     hash_ = _sha256_b64(rendered)
 
     runtime_base = (f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
@@ -118,18 +120,18 @@ def _prepare_runtime_config(
 
     # fast path
     if aws.check_for_key(r_path, r_bucket):
-        return runtime_base, True
+        return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
 
     # wait if config exists but result not yet ready
     if aws.check_for_key(c_path, c_bucket):
         start = time.time()
         while time.time() - start < timeout.total_seconds():
             if aws.check_for_key(r_path, r_bucket):
-                return runtime_base, True
+                return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
             time.sleep(300)
 
     aws.load_string(rendered, key=cfg_key, bucket_name=c_bucket, replace=True)
-    return runtime_base, False
+    return (runtime_base, False, jar_path) if return_jar_path else (runtime_base, False)
 
 
 def make_confetti_tasks(
@@ -148,15 +150,17 @@ def make_confetti_tasks(
     """
 
     def _prep(**context):
-        rb, skip = _prepare_runtime_config(
+        rb, skip, jar = _prepare_runtime_config(
             group_name,
             job_name,
             context.get("ds", run_date),
             experiment_name,
             check_timeout,
+            return_jar_path=True,
         )
         context["ti"].xcom_push(key="runtime_base", value=rb)
         context["ti"].xcom_push(key="skip_job", value=skip)
+        context["ti"].xcom_push(key="audienceJarPath", value=jar)
 
     prep_task = OpTask(op=PythonOperator(
         task_id=f"prepare_confetti_{job_name}",
