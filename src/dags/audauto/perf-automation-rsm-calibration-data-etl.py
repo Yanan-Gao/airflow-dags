@@ -5,7 +5,8 @@ from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_emr_job_task import ConfettiEmrJobTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
 from ttd.operators.dataset_check_sensor import DatasetCheckSensor
@@ -115,10 +116,14 @@ audience_calibration_data_etl_cluster_task = EmrClusterTask(
 ###############################################################################
 # steps
 ###############################################################################
-audience_rsm_calibration_data_generation_step = ConfettiEmrJobTask(
+prep_task, gate_task = make_confetti_tasks(
     group_name="audience",
+    job_name="CalibrationInputDataGeneratorJob",
     experiment_name="yanan-demo",
-    # ↓↓↓ everything after this is *exactly* what EmrJobTask expects ↓↓↓
+    run_date=run_date,
+)
+
+audience_rsm_calibration_data_generation_step = EmrJobTask(
     name="CalibrationInputDataGeneratorJob",
     class_name="com.thetradedesk.audience.jobs.CalibrationInputDataGeneratorJob",
     additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
@@ -130,6 +135,10 @@ audience_rsm_calibration_data_generation_step = ConfettiEmrJobTask(
         ("startDate", "2025-03-20"),
         ("ttdReadEnv", oos_read_env),
         ("ttdWriteEnv", override_env),
+        (
+            "confetti_runtime_config_base_path",
+            "{{ ti.xcom_pull(task_ids='" + prep_task.task_id + "', key='runtime_base') }}",
+        ),
     ],
     executable_path=AUDIENCE_JAR,
     timeout_timedelta=timedelta(hours=4),
@@ -151,5 +160,4 @@ write_etl_success_file_task = OpTask(
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_calibration_data_etl_cluster_task.add_parallel_body_task(audience_rsm_calibration_data_generation_step)
-
-calibration_data_etl_dag >> dataset_sensor >> audience_calibration_data_etl_cluster_task >> write_etl_success_file_task >> final_dag_status_step
+calibration_data_etl_dag >> dataset_sensor >> prep_task >> gate_task >> audience_calibration_data_etl_cluster_task >> write_etl_success_file_task >> final_dag_status_step
