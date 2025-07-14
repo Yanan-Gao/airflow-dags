@@ -23,6 +23,9 @@ fake_utils_state = types.ModuleType("airflow.utils.state")
 fake_ops_subdag = types.ModuleType("airflow.operators.subdag")
 fake_utils_task_group = types.ModuleType("airflow.utils.task_group")
 fake_ttdslack = types.ModuleType("ttd.ttdslack")
+fake_pendulum_tz = types.ModuleType("pendulum.tz.timezone")
+fake_pendulum_tz.FixedTimezone = type("FixedTimezone", (), {})
+fake_pendulum_tz.Timezone = type("Timezone", (), {})
 
 
 def dummy_slack_cb(*a, **k):
@@ -207,8 +210,11 @@ sys.modules.setdefault("airflow.providers.amazon.aws", types.ModuleType("airflow
 sys.modules.setdefault("airflow.providers.amazon.aws.hooks", types.ModuleType("airflow.providers.amazon.aws.hooks"))
 sys.modules.setdefault("airflow.providers.amazon.aws.hooks.s3", fake_s3)
 sys.modules.setdefault("ttd.ttdslack", fake_ttdslack)
+sys.modules.setdefault("pendulum", types.ModuleType("pendulum"))
+sys.modules.setdefault("pendulum.tz", types.ModuleType("pendulum.tz"))
+sys.modules.setdefault("pendulum.tz.timezone", fake_pendulum_tz)
 
-from ttd.confetti.confetti_task_factory import (
+from ttd.confetti.confetti_task_factory import (  # noqa: E402
     _resolve_env,
     _render_template,
     _sha256_b64,
@@ -289,3 +295,16 @@ class AudienceJarPathTest(unittest.TestCase):
         )
         self.assertNotIn("audienceJarBranch", data)
         self.assertNotIn("audienceJarVersion", data)
+
+    def test_missing_keys_raise(self):
+        with self.assertRaisesRegex(ValueError, "audienceJarBranch"):
+            _inject_audience_jar_path("audienceJarVersion: 1", MagicMock())
+        with self.assertRaisesRegex(ValueError, "audienceJarVersion"):
+            _inject_audience_jar_path("audienceJarBranch: m", MagicMock())
+
+    def test_empty_current_file(self):
+        mock_aws = MagicMock()
+        mock_aws.read_key.return_value = ""
+        tpl = "audienceJarBranch: master\naudienceJarVersion: latest"
+        with self.assertRaisesRegex(ValueError, "No version"):
+            _inject_audience_jar_path(tpl, mock_aws)
