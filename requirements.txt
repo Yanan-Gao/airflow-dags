@@ -48,6 +48,7 @@ slack-sdk
 msgpack
 msoffcrypto-tool
 xlsxwriter
+jinja2
 xlrd
 opentelemetry-sdk==1.30.0
 phonenumbers

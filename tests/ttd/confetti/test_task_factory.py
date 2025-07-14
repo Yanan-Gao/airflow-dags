@@ -239,7 +239,7 @@ class ResolveEnvTest(unittest.TestCase):
 class TemplateTest(unittest.TestCase):
 
     def test_render_and_hash(self):
-        tpl = "hello {name}"
+        tpl = "hello {{ name }}"
         rendered = _render_template(tpl, {"name": "world"})
         self.assertEqual(rendered, "hello world")
         h = _sha256_b64(rendered)

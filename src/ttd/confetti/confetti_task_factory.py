@@ -26,11 +26,21 @@ def _sha256_b64(data: str) -> str:
 
 
 def _render_template(tpl: str, ctx: dict[str, str]) -> str:
-    rendered = tpl.format(**ctx)
-    unresolved = re.findall(r"{[^{}]+}", rendered)
-    if unresolved:
-        raise ValueError(f"Unresolved variables in template: {unresolved}")
-    return rendered
+    """Render ``tpl`` as a Jinja template using ``ctx``.
+
+    ``StrictUndefined`` is used so that an informative error is raised if
+    required variables are missing. This keeps behaviour similar to the old
+    ``str.format`` implementation while allowing full Jinja flexibility.
+    """
+
+    from jinja2 import Environment, StrictUndefined
+
+    env = Environment(undefined=StrictUndefined)
+    try:
+        template = env.from_string(tpl)
+        return template.render(**ctx)
+    except Exception as exc:
+        raise ValueError(f"Failed to render template: {exc}") from exc
 
 
 def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
