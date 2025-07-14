@@ -22,8 +22,10 @@ from ttd.ttdenv import TtdEnvFactory
 _CONFIG_BUCKET = "thetradedesk-mlplatform-us-east-1"
 
 
-def _sha256_b64(data: str) -> str:
-    return base64.b64encode(hashlib.sha256(data.encode()).digest()).decode()
+def _sha256_b32(data: str) -> str:
+    """Return a base32-encoded SHA256 digest without padding."""
+    digest = hashlib.sha256(data.encode()).digest()
+    return base64.b32encode(digest).decode().rstrip("=")
 
 
 def _render_template(tpl: str, ctx: Dict[str, str]) -> str:
@@ -61,7 +63,7 @@ def _prepare_confetti_runtime(
     aws = AwsCloudStorage()
     template = aws.read_key(tpl_key)
     rendered = _render_template(template, {"date": run_date})
-    hash_ = _sha256_b64(rendered)
+    hash_ = _sha256_b32(rendered)
 
     runtime_base = (
         f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"

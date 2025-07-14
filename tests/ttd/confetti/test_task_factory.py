@@ -166,7 +166,7 @@ sys.modules.setdefault("ttd.ttdslack", fake_ttdslack)
 from ttd.confetti.confetti_task_factory import (
     _resolve_env,
     _render_template,
-    _sha256_b64,
+    _sha256_b32,
     make_confetti_tasks,
 )
 
@@ -186,8 +186,8 @@ class TemplateTest(unittest.TestCase):
         tpl = "hello {name}"
         rendered = _render_template(tpl, {"name": "world"})
         self.assertEqual(rendered, "hello world")
-        h = _sha256_b64(rendered)
-        self.assertEqual(len(h), 44)
+        h = _sha256_b32(rendered)
+        self.assertEqual(len(h), 52)
 
 class FactoryTest(unittest.TestCase):
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")

@@ -99,9 +99,10 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
             raise ValueError(f"Unresolved variables in template: {unresolved}")
         return rendered
 
-    def _sha256_b64(self, content: str) -> str:
+    def _sha256_b32(self, content: str) -> str:
+        """Return a base32-encoded SHA256 digest without padding."""
         digest = hashlib.sha256(content.encode("utf-8")).digest()
-        return base64.b64encode(digest).decode("utf-8")
+        return base64.b32encode(digest).decode("utf-8").rstrip("=")
 
     def _build_runtime_base(self, config_hash: str) -> str:
         return (
@@ -143,7 +144,7 @@ class AutoConfiguredEmrJobTask(ChainOfTasks):
         run_date = context.get("ds", self.run_date)
         rendered = self._render_template(template, {"date": run_date})
 
-        config_hash = self._sha256_b64(rendered)
+        config_hash = self._sha256_b32(rendered)
         runtime_base = self._build_runtime_base(config_hash)
         config_runtime_key = runtime_base + "behavioral_config.yml"
 
