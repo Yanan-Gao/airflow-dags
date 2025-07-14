@@ -6,6 +6,7 @@ import hashlib
 import re
 import time
 from typing import Tuple
+import yaml
 
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
@@ -13,7 +14,6 @@ from ttd.tasks.op import OpTask
 
 from ttd.cloud_storages.aws_cloud_storage import AwsCloudStorage
 from ttd.ttdenv import TtdEnvFactory
-
 
 _CONFIG_BUCKET = "thetradedesk-mlplatform-us-east-1"
 
@@ -31,6 +31,41 @@ def _render_template(tpl: str, ctx: dict[str, str]) -> str:
     if unresolved:
         raise ValueError(f"Unresolved variables in template: {unresolved}")
     return rendered
+
+
+def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
+    """Compute audienceJarPath from branch and version and remove those keys."""
+    try:
+        data = yaml.safe_load(rendered)
+    except Exception:
+        return rendered
+
+    if not isinstance(data, dict):
+        return rendered
+
+    branch = data.pop("audienceJarBranch", None)
+    version = data.pop("audienceJarVersion", None)
+
+    if branch is not None and version is not None:
+        version_value = version
+        if str(version).lower() == "latest":
+            if branch == "master":
+                current_key = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/_CURRENT")
+            else:
+                current_key = (f"s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/{branch}/_CURRENT")
+            version_value = aws.read_key(current_key).splitlines()[0].strip()
+
+        if branch == "master":
+            jar_path = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/snapshots/master/"
+                        f"{version_value}/audience.jar")
+        else:
+            jar_path = (
+                "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/"
+                f"{branch}/{version_value}/audience.jar"
+            )
+        data["audienceJarPath"] = jar_path
+
+    return yaml.safe_dump(data, sort_keys=True)
 
 
 def _resolve_env(env: str, experiment: str) -> str:
@@ -53,20 +88,17 @@ def _prepare_runtime_config(
 ) -> tuple[str, bool]:
     env = _resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment)
     exp_dir = f"{experiment}/" if experiment else ""
-    tpl_key = (
-        f"s3://{_CONFIG_BUCKET}/configdata/confetti/configs/"
-        f"{env}/{exp_dir}{group}/{job}/behavioral_config.yml"
-    )
+    tpl_key = (f"s3://{_CONFIG_BUCKET}/configdata/confetti/configs/"
+               f"{env}/{exp_dir}{group}/{job}/behavioral_config.yml")
 
     aws = AwsCloudStorage()
     template = aws.read_key(tpl_key)
     rendered = _render_template(template, {"date": run_date})
+    rendered = _inject_audience_jar_path(rendered, aws)
     hash_ = _sha256_b64(rendered)
 
-    runtime_base = (
-        f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
-        f"{env}/{group}/{job}/{hash_}/"
-    )
+    runtime_base = (f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
+                    f"{env}/{group}/{job}/{hash_}/")
     cfg_key = runtime_base + "behavioral_config.yml"
     res_key = runtime_base + "result.yml"
 
@@ -115,21 +147,17 @@ def make_confetti_tasks(
         context["ti"].xcom_push(key="runtime_base", value=rb)
         context["ti"].xcom_push(key="skip_job", value=skip)
 
-    prep_task = OpTask(
-        op=PythonOperator(
-            task_id=f"prepare_confetti_{job_name}",
-            python_callable=_prep,
-        )
-    )
+    prep_task = OpTask(op=PythonOperator(
+        task_id=f"prepare_confetti_{job_name}",
+        python_callable=_prep,
+    ))
 
     def _should_run(**context):
         return not context["ti"].xcom_pull(task_ids=prep_task.task_id, key="skip_job")
 
-    gate_task = OpTask(
-        op=ShortCircuitOperator(
-            task_id=f"confetti_should_run_{job_name}",
-            python_callable=_should_run,
-        )
-    )
+    gate_task = OpTask(op=ShortCircuitOperator(
+        task_id=f"confetti_should_run_{job_name}",
+        python_callable=_should_run,
+    ))
 
     return prep_task, gate_task

@@ -2,6 +2,7 @@ import sys
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+import yaml
 
 # provide minimal airflow stubs so imports succeed
 fake_airflow = types.ModuleType("airflow")
@@ -23,59 +24,82 @@ fake_ops_subdag = types.ModuleType("airflow.operators.subdag")
 fake_utils_task_group = types.ModuleType("airflow.utils.task_group")
 fake_ttdslack = types.ModuleType("ttd.ttdslack")
 
+
 def dummy_slack_cb(*a, **k):
     pass
 
+
 fake_ttdslack.dag_post_to_slack_callback = dummy_slack_cb
 
+
 class DummyDAG:
+
     def __init__(self, *a, **k):
         pass
+
 
 class DummyTimetable:
     pass
 
+
 class DummyScheduleInterval:
     pass
+
 
 class DummyDeltaTimetable:
     pass
 
+
 class DummyCronTimetable:
     pass
+
 
 class DummyDagRunInfo:
     pass
 
+
 class DummyDataInterval:
     pass
+
 
 class DummyTimeRestriction:
     pass
 
+
 class DummyBaseHook:
+
     @staticmethod
     def get_connection(name):
         return types.SimpleNamespace(password="token")
 
+
 class DummyTaskInstance:
     pass
 
+
 class DummyDagRun:
+
     def get_task_instances(self, state=None):
         return []
 
+
 class DummySubDagOperator:
+
     def __init__(self, *a, **k):
         pass
 
+
 class DummyTaskGroup:
+
     def __init__(self, *a, **k):
         self.prefix_group_id = False
+
     def add(self, obj):
         pass
+
     def child_id(self, tid):
         return tid
+
 
 fake_airflow.DAG = DummyDAG
 fake_timetables_base.Timetable = DummyTimetable
@@ -95,13 +119,17 @@ fake_utils_state.TaskInstanceState = type("TaskInstanceState", (), {"FAILED": "f
 fake_security.permissions = types.SimpleNamespace()
 fake_settings.TIMEZONE = "UTC"
 
+
 class _DummyOp:
+
     def __init__(self, task_id=None, python_callable=None, **_):
         self.task_id = task_id
         self.python_callable = python_callable
+
     def execute(self, context=None):
         if self.python_callable:
             return self.python_callable(**(context or {}))
+
 
 fake_py.PythonOperator = _DummyOp
 fake_py.ShortCircuitOperator = _DummyOp
@@ -109,32 +137,49 @@ fake_ops.python = fake_py
 fake_airflow.operators = fake_ops
 
 fake_exc = types.ModuleType("airflow.exceptions")
+
+
 class DummyAirflowException(Exception):
     pass
+
+
 fake_exc.AirflowException = DummyAirflowException
 
 fake_s3 = types.ModuleType("airflow.providers.amazon.aws.hooks.s3")
+
+
 class DummyS3Hook:
+
     def __init__(self, *a, **k):
         pass
+
     def load_string(self, *a, **k):
         pass
+
     def load_file_obj(self, *a, **k):
         pass
+
     def check_for_key(self, *a, **k):
         return False
+
     def read_key(self, *a, **k):
         return ""
+
     def parse_s3_url(self, url):
         return ("b", "k")
+
     def get_conn(self):
         return MagicMock()
+
     def delete_objects(self, *a, **k):
         pass
+
     def list_keys(self, *a, **k):
         return []
+
     def list_prefixes(self, *a, **k):
         return []
+
 
 fake_s3.S3Hook = DummyS3Hook
 
@@ -167,10 +212,13 @@ from ttd.confetti.confetti_task_factory import (
     _resolve_env,
     _render_template,
     _sha256_b64,
+    _inject_audience_jar_path,
     make_confetti_tasks,
 )
 
+
 class ResolveEnvTest(unittest.TestCase):
+
     def test_prod_without_experiment(self):
         self.assertEqual(_resolve_env("prod", ""), "prod")
 
@@ -181,7 +229,9 @@ class ResolveEnvTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _resolve_env("test", "")
 
+
 class TemplateTest(unittest.TestCase):
+
     def test_render_and_hash(self):
         tpl = "hello {name}"
         rendered = _render_template(tpl, {"name": "world"})
@@ -189,7 +239,9 @@ class TemplateTest(unittest.TestCase):
         h = _sha256_b64(rendered)
         self.assertEqual(len(h), 43)
 
+
 class FactoryTest(unittest.TestCase):
+
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
     def test_make_tasks_pushes_xcom(self, mock_get_env, mock_storage):
@@ -207,3 +259,33 @@ class FactoryTest(unittest.TestCase):
         ctx["ti"].xcom_push.assert_any_call(key="skip_job", value=False)
         should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
         self.assertTrue(should_run)
+
+
+class AudienceJarPathTest(unittest.TestCase):
+
+    def test_inject_master_latest(self):
+        mock_aws = MagicMock()
+        mock_aws.read_key.side_effect = ["123-abc\n456-def"]
+        tpl = "audienceJarBranch: master\naudienceJarVersion: latest\nother: v"
+        rendered = _inject_audience_jar_path(tpl, mock_aws)
+        data = yaml.safe_load(rendered)
+        self.assertEqual(
+            data["audienceJarPath"],
+            "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/snapshots/master/123-abc/audience.jar",
+        )
+        self.assertNotIn("audienceJarBranch", data)
+        self.assertNotIn("audienceJarVersion", data)
+
+    def test_inject_feature_explicit(self):
+        mock_aws = MagicMock()
+        tpl = ("audienceJarBranch: feature\n"
+               "audienceJarVersion: 1.2.3\n"
+               "foo: bar\n")
+        rendered = _inject_audience_jar_path(tpl, mock_aws)
+        data = yaml.safe_load(rendered)
+        self.assertEqual(
+            data["audienceJarPath"],
+            "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/feature/1.2.3/audience.jar",
+        )
+        self.assertNotIn("audienceJarBranch", data)
+        self.assertNotIn("audienceJarVersion", data)
