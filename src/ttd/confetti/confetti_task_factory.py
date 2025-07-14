@@ -34,37 +34,48 @@ def _render_template(tpl: str, ctx: dict[str, str]) -> str:
 
 
 def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
-    """Compute audienceJarPath from branch and version and remove those keys."""
+    """Compute audienceJarPath from branch and version and remove those keys.
+
+    Raises ``ValueError`` if the YAML cannot be parsed or required keys are
+    missing. Errors from ``AwsCloudStorage`` are propagated so the job fails
+    loudly.
+    """
+
     try:
         data = yaml.safe_load(rendered)
-    except Exception:
-        return rendered
+    except Exception as exc:  # pragma: no cover - malformed YAML
+        raise ValueError(f"Failed to parse Confetti YAML: {exc}") from exc
 
-    if not isinstance(data, dict):
-        return rendered
+    if not isinstance(data, dict):  # pragma: no cover - unexpected structure
+        raise ValueError("Confetti YAML must be a mapping")
 
-    branch = data.pop("audienceJarBranch", None)
-    version = data.pop("audienceJarVersion", None)
+    if "audienceJarBranch" not in data:
+        raise ValueError("audienceJarBranch is required in Confetti config")
+    if "audienceJarVersion" not in data:
+        raise ValueError("audienceJarVersion is required in Confetti config")
 
-    if branch is not None and version is not None:
-        version_value = version
-        if str(version).lower() == "latest":
-            if branch == "master":
-                current_key = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/_CURRENT")
-            else:
-                current_key = (f"s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/{branch}/_CURRENT")
-            version_value = aws.read_key(current_key).splitlines()[0].strip()
+    branch = str(data.pop("audienceJarBranch"))
+    version = str(data.pop("audienceJarVersion"))
 
+    version_value = version
+    if version.lower() == "latest":
         if branch == "master":
-            jar_path = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/snapshots/master/"
-                        f"{version_value}/audience.jar")
+            current_key = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/_CURRENT")
         else:
-            jar_path = (
-                "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/"
-                f"{branch}/{version_value}/audience.jar"
-            )
-        data["audienceJarPath"] = jar_path
+            current_key = (f"s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/{branch}/_CURRENT")
+        lines = aws.read_key(current_key).splitlines()
+        if not lines or not lines[0].strip():
+            raise ValueError(f"No version found in {current_key}")
+        version_value = lines[0].strip()
 
+    if branch == "master":
+        jar_path = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/snapshots/master/"
+                    f"{version_value}/audience.jar")
+    else:
+        jar_path = ("s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/mergerequests/"
+                    f"{branch}/{version_value}/audience.jar")
+
+    data["audienceJarPath"] = jar_path
     return yaml.safe_dump(data, sort_keys=True)
 
 
