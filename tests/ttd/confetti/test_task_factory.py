@@ -187,7 +187,7 @@ class TemplateTest(unittest.TestCase):
         rendered = _render_template(tpl, {"name": "world"})
         self.assertEqual(rendered, "hello world")
         h = _sha256_b64(rendered)
-        self.assertEqual(len(h), 44)
+        self.assertEqual(len(h), 43)
 
 class FactoryTest(unittest.TestCase):
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")

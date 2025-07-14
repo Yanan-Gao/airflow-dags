@@ -14,6 +14,7 @@ from ttd.operators.final_dag_status_check_operator import FinalDagStatusCheckOpe
 from ttd.operators.write_date_to_s3_file_operator import WriteDateToS3FileOperator
 from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 
 java_settings_list = [("spark.sql.objectHashAggregate.sortBased.fallbackThreshold", "4096")]
 
@@ -137,7 +138,7 @@ audience_rsm_calibration_data_generation_step = EmrJobTask(
         ("ttdWriteEnv", override_env),
         (
             "confetti_runtime_config_base_path",
-            "{{ ti.xcom_pull(task_ids='" + prep_task.task_id + "', key='runtime_base') }}",
+            get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="runtime_base"),
         ),
     ],
     executable_path=AUDIENCE_JAR,

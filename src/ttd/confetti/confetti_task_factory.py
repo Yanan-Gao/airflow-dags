@@ -19,7 +19,10 @@ _CONFIG_BUCKET = "thetradedesk-mlplatform-us-east-1"
 
 
 def _sha256_b64(data: str) -> str:
-    return base64.b64encode(hashlib.sha256(data.encode("utf-8")).digest()).decode()
+    """Return a URL-safe base64-encoded SHA256 digest without padding."""
+    digest = hashlib.sha256(data.encode("utf-8")).digest()
+    # urlsafe_b64encode avoids '/' so it is safe for S3 keys
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
 def _render_template(tpl: str, ctx: dict[str, str]) -> str:
