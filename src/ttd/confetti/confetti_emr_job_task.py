@@ -8,10 +8,9 @@ from datetime import timedelta
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.utils.context import Context
 
 from ttd.cloud_storages.aws_cloud_storage import AwsCloudStorage
-from ttd.eldorado.aws.emr_job_task import EmrJobTask, EmrTaskVisitor
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.tasks.op import OpTask
 from ttd.ttdenv import TtdEnvFactory
 
@@ -94,98 +93,48 @@ def _prepare_confetti_runtime(
 # ---------------------------------------------------------------------
 # Public façade
 # ---------------------------------------------------------------------
-
-
 class ConfettiEmrJobTask(EmrJobTask):
-    """
-    A drop‑in replacement for :class:`EmrJobTask` that auto‑handles
-    Confetti runtime configuration and cheap short‑circuiting.
-    DAG authors write *only* this class; they never touch the helper tasks.
-    """
+    def __init__(self, *, group_name: str, experiment_name: str = "",
+                 run_date: str = "{{ ds }}", check_timeout: timedelta = timedelta(hours=2),
+                 eldorado_config_option_pairs_list: Optional[Sequence[Tuple[str, str]]] = None,
+                 **emr_kwargs):
 
-    # keep pylint happy – we create helper tasks at runtime
-    _confetti_prepare: OpTask
-    _confetti_gate: OpTask
-
-    def __init__(
-        self,
-        *,
-        group_name: str,
-        experiment_name: str = "",
-        run_date: str = "{{ ds }}",
-        check_timeout: timedelta = timedelta(hours=2),
-        eldorado_config_option_pairs_list: Optional[
-            Sequence[Tuple[str, str]]
-        ] = None,
-        **emr_kwargs,
-    ):
-        # ------------------------------------------------------------------
-        # 1.  Build the *prepare* and *gate* operators (hidden from user)
-        # ------------------------------------------------------------------
+        # ids
         job_name = emr_kwargs.get("name") or emr_kwargs.get("task_id") or "emr_job"
+        prep_id  = f"prepare_confetti_config_{job_name}"
+        gate_id  = f"should_run_confetti_{job_name}"
 
-        prepare_task_id = f"prepare_confetti_config_{job_name}"
-        gate_task_id = f"should_run_confetti_{job_name}"
-
-        def _prepare_callable(**context: Context):
+        # helpers --------------------------------------------------------
+        def _prep(**ctx: dict):
             rb, skip = _prepare_confetti_runtime(
-                group=group_name,
-                job=job_name,
-                run_date=context["ds"],
-                experiment=experiment_name,
-                timeout=check_timeout,
+                group_name, job_name, ctx["ds"], experiment_name, check_timeout
             )
-            context["ti"].xcom_push(key="runtime_base", value=rb)
-            context["ti"].xcom_push(key="skip_job", value=skip)
+            ctx["ti"].xcom_push(key="runtime_base", value=rb)
+            ctx["ti"].xcom_push(key="skip_job",   value=skip)
 
-        prepare_op = PythonOperator(
-            task_id=prepare_task_id,
-            python_callable=_prepare_callable,
-        )
-
+        prep_op = PythonOperator(task_id=prep_id,  python_callable=_prep)
         gate_op = ShortCircuitOperator(
-            task_id=gate_task_id,
-            python_callable=lambda **ctx: not ctx["ti"].xcom_pull(
-                task_ids=prepare_task_id, key="skip_job"
-            ),
+            task_id=gate_id,
+            python_callable=lambda **c: not c["ti"].xcom_pull(task_ids=prep_id, key="skip_job"),
         )
 
-        # ------------------------------------------------------------------
-        # 2.  Inject the runtime‑config JVM option *before* EMRJobTask ctor
-        # ------------------------------------------------------------------
-        eld_opts = list(eldorado_config_option_pairs_list or [])
-        eld_opts.append(
-            (
-                "confetti_runtime_config_base_path",
-                "{{ ti.xcom_pull(task_ids='"
-                + prepare_task_id
-                + "', key='runtime_base') }}",
-            )
-        )
+        # JVM option -----------------------------------------------------
+        cfg_opt = ("confetti_runtime_config_base_path",
+                   "{{ ti.xcom_pull(task_ids='" + prep_id + "', key='runtime_base') }}")
+
+        user_opts = emr_kwargs.pop("eldorado_config_option_pairs_list", []) or []
+        eld_opts  = list(user_opts) + [cfg_opt]
         emr_kwargs["eldorado_config_option_pairs_list"] = eld_opts
 
-        # ------------------------------------------------------------------
-        # 3.  Standard EmrJobTask construction
-        # ------------------------------------------------------------------
-        super().__init__(eldorado_config_option_pairs_list=eld_opts, **emr_kwargs)
+        # parent ctor ----------------------------------------------------
+        super().__init__(**emr_kwargs)
 
-        # ------------------------------------------------------------------
-        # 4.  Chain helpers locally and expose for external chaining
-        # ------------------------------------------------------------------
-        prepare_wrapper = OpTask(op=prepare_op)
-        gate_wrapper = OpTask(op=gate_op)
+        # local chain ----------------------------------------------------
+        OpTask(op=prep_op) >> OpTask(op=gate_op) >> self
+        self._confetti_gate = OpTask(op=gate_op)
 
-        prepare_wrapper >> gate_wrapper >> self  # local DAG chain
-
-        self._confetti_prepare = prepare_wrapper
-        self._confetti_gate = gate_wrapper
-
-    # ------------------------------------------------------------------
-    # 5.  Ensure cluster is not created unless *gate* passes
-    # ------------------------------------------------------------------
     def accept(self, visitor):
-        if isinstance(visitor, EmrTaskVisitor):
-            cluster_task = visitor.current_cluster
-            # gate must finish before cluster creation
+        cluster_task = getattr(visitor, "current_cluster", None)
+        if cluster_task:
             self._confetti_gate >> cluster_task
         super().accept(visitor)
