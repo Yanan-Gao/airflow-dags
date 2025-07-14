@@ -9,6 +9,8 @@ from typing import Tuple
 
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
+from ttd.tasks.op import OpTask
+
 from ttd.cloud_storages.aws_cloud_storage import AwsCloudStorage
 from ttd.ttdenv import TtdEnvFactory
 
@@ -91,8 +93,13 @@ def make_confetti_tasks(
     experiment_name: str = "",
     run_date: str = "{{ ds }}",
     check_timeout: timedelta = timedelta(hours=2),
-) -> Tuple[PythonOperator, ShortCircuitOperator]:
-    """Return (prepare_op, fast_pass_op) for confetti jobs."""
+) -> Tuple[OpTask, OpTask]:
+    """Return (prepare_task, gate_task) for Confetti jobs.
+
+    Both tasks are ``OpTask`` instances wrapping an underlying Airflow
+    ``PythonOperator`` and ``ShortCircuitOperator`` so that they can be
+    chained with other :class:`BaseTask` objects using ``>>``.
+    """
 
     def _prep(**context):
         rb, skip = _prepare_runtime_config(
@@ -105,17 +112,21 @@ def make_confetti_tasks(
         context["ti"].xcom_push(key="runtime_base", value=rb)
         context["ti"].xcom_push(key="skip_job", value=skip)
 
-    prep_op = PythonOperator(
-        task_id=f"prepare_confetti_{job_name}",
-        python_callable=_prep,
+    prep_task = OpTask(
+        op=PythonOperator(
+            task_id=f"prepare_confetti_{job_name}",
+            python_callable=_prep,
+        )
     )
 
     def _should_run(**context):
-        return not context["ti"].xcom_pull(task_ids=prep_op.task_id, key="skip_job")
+        return not context["ti"].xcom_pull(task_ids=prep_task.task_id, key="skip_job")
 
-    gate_op = ShortCircuitOperator(
-        task_id=f"confetti_should_run_{job_name}",
-        python_callable=_should_run,
+    gate_task = OpTask(
+        op=ShortCircuitOperator(
+            task_id=f"confetti_should_run_{job_name}",
+            python_callable=_should_run,
+        )
     )
 
-    return prep_op, gate_op
+    return prep_task, gate_task
