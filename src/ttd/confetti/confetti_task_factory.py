@@ -5,7 +5,6 @@ import logging
 from datetime import timedelta
 import base64
 import hashlib
-import re
 import time
 from typing import Tuple
 import yaml
@@ -136,6 +135,99 @@ def _resolve_env(env: str, experiment: str) -> str:
     return "test"
 
 
+def _template_dir(env: str, group: str, job: str, experiment: str) -> str:
+    exp_dir = f"{experiment}/" if experiment else ""
+    return (
+        f"s3://{_CONFIG_BUCKET}/configdata/confetti/configs/"
+        f"{env}/{exp_dir}{group}/{job}/"
+    )
+
+
+def _load_render_config(
+        aws: AwsCloudStorage,
+        tpl_key: str,
+        run_date: str,
+) -> tuple[str, str, str, dict[str, Any]]:
+    template = aws.read_key(tpl_key)
+    run_vars = _collect_job_run_level_variables(run_date=run_date)
+    rendered = _render_template(template, run_vars)
+    rendered = _inject_audience_jar_path(rendered, aws)
+    jar_path = yaml.safe_load(rendered)["audienceJarPath"]
+    hash_ = _sha256_b64(rendered)
+    return rendered, jar_path, hash_, run_vars
+
+
+def _runtime_paths(
+        env: str,
+        group: str,
+        job: str,
+        hash_: str,
+        experiment: str,
+) -> tuple[str, str, str, str]:
+    base = (
+        f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
+        f"{env}/{group}/{job}/{hash_}/"
+    )
+    cfg = base + "behavioral_config.yml"
+    success = base + "_SUCCESS"
+    start = base + (f"_START_{experiment}" if experiment else "_START")
+    return base, cfg, success, start
+
+
+def _wait_for_success(
+        aws: AwsCloudStorage,
+        bucket: str,
+        success_key: str,
+        start_key: str,
+        timeout: timedelta,
+) -> bool:
+    if aws.check_for_key(success_key, bucket):
+        return True
+
+    if aws.check_for_key(start_key, bucket):
+        start = time.time()
+        while time.time() - start < timeout.total_seconds():
+            if aws.check_for_key(success_key, bucket):
+                return True
+            logger.info(
+                "Going to wait for another round for: %s, key %s",
+                bucket,
+                success_key,
+            )
+            time.sleep(300)
+    return False
+
+
+def _upload_runtime_configs(
+        aws: AwsCloudStorage,
+        runtime_bucket: str,
+        runtime_prefix: str,
+        rendered: str,
+        tpl_dir: str,
+        run_vars: dict[str, Any],
+        start_key: str,
+) -> None:
+    cfg_path = runtime_prefix + "behavioral_config.yml"
+    logger.info("Writing runtime-config to bucket %s, key %s", runtime_bucket, cfg_path)
+    aws.load_string(rendered, key=cfg_path, bucket_name=runtime_bucket, replace=True)
+    logger.info(
+        "Finished uploading runtime-config to bucket %s, key %s",
+        runtime_bucket,
+        cfg_path,
+    )
+
+    d_bucket, d_prefix = aws._parse_bucket_and_key(tpl_dir, None)
+    for key in aws.list_keys(prefix=d_prefix, bucket_name=d_bucket) or []:
+        if key.endswith("behavioral_config.yml") or not key.endswith((".yml", ".yaml")):
+            continue
+        tpl = aws.read_key(key, bucket_name=d_bucket)
+        content = _render_template(tpl, run_vars)
+        dest_key = runtime_prefix + key.split("/")[-1]
+        aws.load_string(content, key=dest_key, bucket_name=runtime_bucket, replace=True)
+
+    aws.load_string("", key=start_key, bucket_name=runtime_bucket, replace=True)
+
+
 def _prepare_runtime_config(
         group: str,
         job: str,
@@ -155,70 +247,38 @@ def _prepare_runtime_config(
     is created to mark the run.
     """
     env = _resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment)
-    exp_dir = f"{experiment}/" if experiment else ""
-    tpl_dir = (
-        f"s3://{_CONFIG_BUCKET}/configdata/confetti/configs/"
-        f"{env}/{exp_dir}{group}/{job}/"
-    )
+    tpl_dir = _template_dir(env, group, job, experiment)
     tpl_key = tpl_dir + "behavioral_config.yml"
 
     aws = AwsCloudStorage()
-    template = aws.read_key(tpl_key)
-    run_level_variables = _collect_job_run_level_variables(run_date=run_date)
-    rendered = _render_template(template, run_level_variables)
-    rendered = _inject_audience_jar_path(rendered, aws)
-    jar_path = yaml.safe_load(rendered)["audienceJarPath"]
-    hash_ = _sha256_b64(rendered)
+    rendered, jar_path, hash_, run_vars = _load_render_config(aws, tpl_key, run_date)
 
-    runtime_base = (
-        f"s3://{_CONFIG_BUCKET}/configdata/confetti/runtime-configs/"
-        f"{env}/{group}/{job}/{hash_}/"
+    runtime_base, cfg_key, success_key, start_key = _runtime_paths(
+        env,
+        group,
+        job,
+        hash_,
+        experiment,
     )
-    cfg_key = runtime_base + "behavioral_config.yml"
-    success_key = runtime_base + "_SUCCESS"
-    start_key = runtime_base + (f"_START_{experiment}" if experiment else "_START")
+    bucket, prefix = aws._parse_bucket_and_key(runtime_base, None)
+    cfg_path = prefix + "behavioral_config.yml"
+    success_path = prefix + "_SUCCESS"
+    start_path = prefix + (f"_START_{experiment}" if experiment else "_START")
 
-    c_bucket, c_path = aws._parse_bucket_and_key(cfg_key, None)
-    s_bucket, s_path = aws._parse_bucket_and_key(success_key, None)
-    st_bucket, st_path = aws._parse_bucket_and_key(start_key, None)
+    logger.info("Parsed runtime-config bucket %s, key %s", bucket, cfg_path)
 
-    logger.info("Parsed runtime-config bucket %s, key %s", c_bucket, c_path)
-
-    # fast path
-    if aws.check_for_key(s_path, s_bucket):
+    if _wait_for_success(aws, bucket, success_path, start_path, timeout):
         return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
 
-    # wait if another run has started the job but not finished
-    if aws.check_for_key(st_path, st_bucket):
-        start = time.time()
-        while time.time() - start < timeout.total_seconds():
-            if aws.check_for_key(s_path, s_bucket):
-                return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
-            logger.info("Going to wait for another round for: %s, key %s", s_bucket, s_path)
-            time.sleep(300)
-
-    logger.info("Writing runtime-config to bucket %s, key %s", c_bucket, c_path)
-
-    aws.load_string(rendered, key=c_path, bucket_name=c_bucket, replace=True)
-
-    logger.info("Finished uploading runtime-config to bucket %s, key %s", c_bucket, c_path)
-
-    # upload the rendered behavioral config
-    aws.load_string(rendered, key=cfg_key, bucket_name=c_bucket, replace=True)
-
-    # render and upload other yaml templates in the same directory
-    d_bucket, d_prefix = aws._parse_bucket_and_key(tpl_dir, None)
-    for key in aws.list_keys(prefix=d_prefix, bucket_name=d_bucket) or []:
-        if key.endswith("behavioral_config.yml") or not key.endswith((".yml", ".yaml")):
-            continue
-        tpl = aws.read_key(key, bucket_name=d_bucket)
-        content = _render_template(tpl, run_level_variables)
-        dest_key = runtime_base + key.split("/")[-1]
-        dest_bucket, _ = aws._parse_bucket_and_key(dest_key, None)
-        aws.load_string(content, key=dest_key, bucket_name=dest_bucket, replace=True)
-
-    b_start, _ = aws._parse_bucket_and_key(start_key, None)
-    aws.load_string("", key=start_key, bucket_name=b_start, replace=True)
+    _upload_runtime_configs(
+        aws,
+        bucket,
+        prefix,
+        rendered,
+        tpl_dir,
+        run_vars,
+        start_path,
+    )
 
     return (runtime_base, False, jar_path) if return_jar_path else (runtime_base, False)
 
@@ -247,7 +307,7 @@ def make_confetti_tasks(
             check_timeout,
             return_jar_path=True,
         )
-        context["ti"].xcom_push(key="confetti_runtime_config_base_path", value=rb)
+        context["ti"].xcom_push(key="runtime_base", value=rb)
         context["ti"].xcom_push(key="skip_job", value=skip)
         context["ti"].xcom_push(key="audienceJarPath", value=jar)
 
