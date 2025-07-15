@@ -6,6 +6,7 @@ from datetime import timedelta
 import base64
 import hashlib
 import time
+import os
 from typing import Tuple
 import yaml
 
@@ -95,21 +96,28 @@ def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
 # ---------------------------------------------------------------------------
 def _collect_job_run_level_variables(
         *,  # enforce keyword use – clearer at call‑site
-        run_date: str | datetime | date,
+        run_date: str | datetime | date | None = None,
         **extra_vars: Any,  # future‑proof: pass any additional items here
 ) -> dict[str, Any]:
     """
     Build the context dictionary that will be fed into Jinja templates.
 
-    Currently we normalise *run_date* so templates can safely call
-    ``{{ date.strftime('%Y%m%d') }}`` regardless of whether Airflow
-    supplied a string (\"YYYY‑MM‑DD\"), a ``datetime.date`` or a
-    ``datetime.datetime``.
+    ``run_date`` may be omitted when executed within an Airflow task. In that
+    case the value is inferred from the ``AIRFLOW_CTX_DATA_INTERVAL_START`` or
+    ``AIRFLOW_CTX_EXECUTION_DATE`` environment variables automatically provided
+    by Airflow. The value is normalised so templates can safely call
+    ``{{ date.strftime('%Y%m%d') }}`` regardless of whether a string
+    (``"YYYY-MM-DD"``), ``datetime.date`` or ``datetime.datetime`` was supplied.
 
-    Extra keyword arguments are simply forwarded, making it trivial
-    to extend the set of runtime variables later without touching the
-    callers.
+    Extra keyword arguments are simply forwarded, making it trivial to extend
+    the set of runtime variables later without touching the callers.
     """
+    if run_date is None:
+        env_val = os.getenv("AIRFLOW_CTX_DATA_INTERVAL_START") or os.getenv("AIRFLOW_CTX_EXECUTION_DATE")
+        if not env_val:
+            raise ValueError("run_date is required and could not be inferred from the environment")
+        run_date = env_val[:10]
+
     # Normalise *run_date* → datetime
     if isinstance(run_date, str):
         run_date_obj = datetime.fromisoformat(run_date)
@@ -155,21 +163,36 @@ def _runtime_paths(env: str, group: str, job: str, hash_: str, experiment: str) 
     runtime_base = f"s3://{_CONFIG_BUCKET}/{base_key}"
     cfg_key = base_key + "behavioral_config.yml"
     success_key = base_key + "_SUCCESS"
-    start_key = base_key + (f"_START_{experiment}" if experiment else "_START")
+    start_key = base_key + "_START"
     return runtime_base, cfg_key, success_key, start_key
 
 
-def _wait_for_existing_run(aws: AwsCloudStorage, success_key: str, start_key: str, timeout: timedelta) -> bool:
-    if aws.check_for_key(success_key, _CONFIG_BUCKET):
-        return True
-    if aws.check_for_key(start_key, _CONFIG_BUCKET):
-        start = time.time()
-        while time.time() - start < timeout.total_seconds():
-            if aws.check_for_key(success_key, _CONFIG_BUCKET):
-                return True
-            logger.info("Going to wait for another round for: %s, key %s", _CONFIG_BUCKET, success_key)
-            time.sleep(300)
+def _success_exists(aws: AwsCloudStorage, success_key: str) -> bool:
+    return aws.check_for_key(success_key, _CONFIG_BUCKET)
+
+
+def _wait_for_start_and_success(
+    aws: AwsCloudStorage, start_key: str, success_key: str, timeout: timedelta
+) -> bool:
+    if not aws.check_for_key(start_key, _CONFIG_BUCKET):
+        return False
+    start = time.time()
+    while time.time() - start < timeout.total_seconds():
+        if _success_exists(aws, success_key):
+            return True
+        logger.info(
+            "Going to wait for another round for: %s, key %s",
+            _CONFIG_BUCKET,
+            success_key,
+        )
+        time.sleep(300)
     return False
+
+
+def _wait_for_existing_run(aws: AwsCloudStorage, success_key: str, start_key: str, timeout: timedelta) -> bool:
+    if _success_exists(aws, success_key):
+        return True
+    return _wait_for_start_and_success(aws, start_key, success_key, timeout)
 
 
 def _upload_additional_configs(
@@ -191,7 +214,7 @@ def _upload_additional_configs(
 def _prepare_runtime_config(
         group: str,
         job: str,
-        run_date: str,
+        run_date: str | None = None,
         experiment: str,
         timeout: timedelta,
         return_jar_path: bool = False,
@@ -218,8 +241,8 @@ def _prepare_runtime_config(
 
     _upload_additional_configs(aws, tpl_dir, runtime_base_key, run_vars)
 
-    # write _START key.
-    aws.load_string("", key=start_key, bucket_name=_CONFIG_BUCKET, replace=True)
+    # write _START key with experiment metadata
+    aws.load_string(experiment or "", key=start_key, bucket_name=_CONFIG_BUCKET, replace=True)
 
     return (runtime_base, False, jar_path) if return_jar_path else (runtime_base, False)
 
