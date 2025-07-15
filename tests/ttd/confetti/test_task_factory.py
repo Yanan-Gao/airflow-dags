@@ -301,6 +301,8 @@ class FactoryTest(unittest.TestCase):
         _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
 
         keys = [c.kwargs.get("key") for c in instance.load_string.call_args_list]
+        first_call_content = instance.load_string.call_args_list[0].args[0]
+        self.assertIn("runDate: '2020-01-01'", first_call_content)
         self.assertTrue(any(str(k).endswith("output_config.yml") for k in keys))
         out_call = next(c for c in instance.load_string.call_args_list if str(c.kwargs.get("key")).endswith("output_config.yml"))
         self.assertFalse(str(out_call.kwargs.get("key")).startswith("s3://"))

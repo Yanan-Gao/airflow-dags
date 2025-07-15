@@ -91,6 +91,31 @@ def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
     return yaml.safe_dump(data, sort_keys=True)
 
 
+def _inject_run_date(rendered: str, run_date: datetime | date | str | None) -> str:
+    """Add ``runDate`` to the config."""
+
+    if run_date is None:
+        return rendered
+
+    try:
+        data = yaml.safe_load(rendered)
+    except Exception as exc:  # pragma: no cover - malformed YAML
+        raise ValueError(f"Failed to parse Confetti YAML: {exc}") from exc
+
+    if not isinstance(data, dict):  # pragma: no cover - unexpected structure
+        raise ValueError("Confetti YAML must be a mapping")
+
+    if isinstance(run_date, str):
+        run_date_obj = datetime.fromisoformat(run_date)
+    elif isinstance(run_date, date) and not isinstance(run_date, datetime):
+        run_date_obj = datetime.combine(run_date, datetime.min.time())
+    else:
+        run_date_obj = run_date
+
+    data["runDate"] = run_date_obj.strftime("%Y-%m-%d")
+    return yaml.safe_dump(data, sort_keys=True)
+
+
 # ---------------------------------------------------------------------------
 # Template‑context helper  # todo support more run level variables.
 # ---------------------------------------------------------------------------
@@ -154,6 +179,7 @@ def _render_behavioral_config(
     template = aws.read_key(tpl_key, bucket_name=_CONFIG_BUCKET)
     rendered = _render_template(template, run_vars)
     rendered = _inject_audience_jar_path(rendered, aws)
+    rendered = _inject_run_date(rendered, run_vars.get("date"))
     jar_path = yaml.safe_load(rendered)["audienceJarPath"]
     return rendered, jar_path
 
@@ -214,7 +240,7 @@ def _upload_additional_configs(
 def _prepare_runtime_config(
         group: str,
         job: str,
-        run_date: str | None = None,
+        run_date: str | None,
         experiment: str,
         timeout: timedelta,
         return_jar_path: bool = False,
