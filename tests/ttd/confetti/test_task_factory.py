@@ -295,6 +295,7 @@ class FactoryTest(unittest.TestCase):
 
         keys = [c.kwargs.get("key") for c in instance.load_string.call_args_list]
         self.assertTrue(any(str(k).endswith("output_config.yml") for k in keys))
+        self.assertTrue(any(str(k).endswith("_START") for k in keys))
 
 
 class AudienceJarPathTest(unittest.TestCase):

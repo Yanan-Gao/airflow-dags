@@ -113,8 +113,10 @@ def _prepare_runtime_config(
     The behavioral config template determines the hash used for the runtime
     path. All YAML templates in the same directory, including ``output_config.yml``,
     are rendered with the run date and uploaded under that path. If a ``_SUCCESS``
-    marker already exists, the job is skipped. When new configs are uploaded a
-    ``_START_<experiment>`` file is created to mark the run.
+    marker already exists, the job is skipped. If a ``_START_<experiment>``
+    file exists but ``_SUCCESS`` does not, the call waits for completion up to
+    ``timeout``. When new configs are uploaded a ``_START_<experiment>`` file
+    is created to mark the run.
     """
     env = _resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment)
     exp_dir = f"{experiment}/" if experiment else ""
@@ -137,16 +139,18 @@ def _prepare_runtime_config(
     )
     cfg_key = runtime_base + "behavioral_config.yml"
     success_key = runtime_base + "_SUCCESS"
+    start_key = runtime_base + (f"_START_{experiment}" if experiment else "_START")
 
-    c_bucket, c_path = aws._parse_bucket_and_key(cfg_key, None)
+    c_bucket, _ = aws._parse_bucket_and_key(cfg_key, None)
     s_bucket, s_path = aws._parse_bucket_and_key(success_key, None)
+    st_bucket, st_path = aws._parse_bucket_and_key(start_key, None)
 
     # fast path
     if aws.check_for_key(s_path, s_bucket):
         return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
 
-    # wait if config exists but result not yet ready
-    if aws.check_for_key(c_path, c_bucket):
+    # wait if another run has started the job but not finished
+    if aws.check_for_key(st_path, st_bucket):
         start = time.time()
         while time.time() - start < timeout.total_seconds():
             if aws.check_for_key(s_path, s_bucket):
@@ -167,9 +171,8 @@ def _prepare_runtime_config(
         dest_bucket, _ = aws._parse_bucket_and_key(dest_key, None)
         aws.load_string(content, key=dest_key, bucket_name=dest_bucket, replace=True)
 
-    start_file = runtime_base + f"_START_{experiment}" if experiment else runtime_base + "_START"
-    b_start, _ = aws._parse_bucket_and_key(start_file, None)
-    aws.load_string("", key=start_file, bucket_name=b_start, replace=True)
+    b_start, _ = aws._parse_bucket_and_key(start_key, None)
+    aws.load_string("", key=start_key, bucket_name=b_start, replace=True)
 
     return (runtime_base, False, jar_path) if return_jar_path else (runtime_base, False)
 
