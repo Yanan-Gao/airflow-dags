@@ -214,8 +214,8 @@ def _prepare_runtime_config(
         tpl = aws.read_key(key, bucket_name=d_bucket)
         content = _render_template(tpl, run_level_variables)
         dest_key = runtime_base + key.split("/")[-1]
-        dest_bucket, _ = aws._parse_bucket_and_key(dest_key, None)
-        aws.load_string(content, key=dest_key, bucket_name=dest_bucket, replace=True)
+        dest_bucket, dest_path = aws._parse_bucket_and_key(dest_key, None)
+        aws.load_string(content, key=dest_path, bucket_name=dest_bucket, replace=True)
 
     b_start, _ = aws._parse_bucket_and_key(start_key, None)
     aws.load_string("", key=start_key, bucket_name=b_start, replace=True)
