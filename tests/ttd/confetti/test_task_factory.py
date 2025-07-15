@@ -2,6 +2,7 @@ import sys
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+from datetime import timedelta
 import yaml
 
 # provide minimal airflow stubs so imports succeed
@@ -219,6 +220,7 @@ from ttd.confetti.confetti_task_factory import (  # noqa: E402
     _render_template,
     _sha256_b64,
     _inject_audience_jar_path,
+    _prepare_runtime_config,
     make_confetti_tasks,
 )
 
@@ -257,6 +259,7 @@ class FactoryTest(unittest.TestCase):
         mock_instance.read_key.return_value = "hi {date}"
         mock_instance._parse_bucket_and_key.side_effect = lambda k, b: ("b", k)
         mock_instance.check_for_key.return_value = False
+        mock_instance.list_keys.return_value = []
         mock_inject.return_value = "audienceJarPath: bar"
 
         prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
@@ -268,6 +271,31 @@ class FactoryTest(unittest.TestCase):
         ctx["ti"].xcom_push.assert_any_call(key="audienceJarPath", value=unittest.mock.ANY)
         should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
         self.assertTrue(should_run)
+
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
+    def test_prepare_renders_output_config(self, mock_inject, mock_get_env, mock_storage):
+        mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
+        instance = mock_storage.return_value
+        instance._parse_bucket_and_key.side_effect = lambda k, b: ("b", k)
+        instance.check_for_key.return_value = False
+        instance.list_keys.return_value = [
+            "p/behavioral_config.yml",
+            "p/output_config.yml",
+        ]
+
+        def _read(key, bucket_name=None):
+            return "audienceJarBranch: master\naudienceJarVersion: 1" if key.endswith("behavioral_config.yml") else "hi {date}"
+
+        instance.read_key.side_effect = _read
+        mock_inject.return_value = "audienceJarPath: bar"
+
+        _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
+
+        keys = [c.kwargs.get("key") for c in instance.load_string.call_args_list]
+        self.assertTrue(any(str(k).endswith("output_config.yml") for k in keys))
+        self.assertTrue(any(str(k).endswith("_START") for k in keys))
 
 
 class AudienceJarPathTest(unittest.TestCase):
