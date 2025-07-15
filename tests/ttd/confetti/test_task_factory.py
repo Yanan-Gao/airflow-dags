@@ -266,7 +266,7 @@ class FactoryTest(unittest.TestCase):
         ctx = {"ds": "2020-01-01", "ti": MagicMock()}
         prep.first_airflow_op().execute(context=ctx)
         ctx["ti"].xcom_pull.return_value = False
-        ctx["ti"].xcom_push.assert_any_call(key="runtime_base", value=unittest.mock.ANY)
+        ctx["ti"].xcom_push.assert_any_call(key="confetti_runtime_config_base_path", value=unittest.mock.ANY)
         ctx["ti"].xcom_push.assert_any_call(key="skip_job", value=False)
         ctx["ti"].xcom_push.assert_any_call(key="audienceJarPath", value=unittest.mock.ANY)
         should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
@@ -278,7 +278,14 @@ class FactoryTest(unittest.TestCase):
     def test_prepare_renders_output_config(self, mock_inject, mock_get_env, mock_storage):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         instance = mock_storage.return_value
-        instance._parse_bucket_and_key.side_effect = lambda k, b: ("b", k)
+        def _parse(k, b=None):
+            if b is None and str(k).startswith("s3://"):
+                no_scheme = str(k)[5:]
+                bucket, key_path = no_scheme.split("/", 1)
+                return bucket, key_path
+            return b or "b", k
+
+        instance._parse_bucket_and_key.side_effect = _parse
         instance.check_for_key.return_value = False
         instance.list_keys.return_value = [
             "p/behavioral_config.yml",
@@ -295,6 +302,8 @@ class FactoryTest(unittest.TestCase):
 
         keys = [c.kwargs.get("key") for c in instance.load_string.call_args_list]
         self.assertTrue(any(str(k).endswith("output_config.yml") for k in keys))
+        out_call = next(c for c in instance.load_string.call_args_list if str(c.kwargs.get("key")).endswith("output_config.yml"))
+        self.assertFalse(str(out_call.kwargs.get("key")).startswith("s3://"))
         self.assertTrue(any(str(k).endswith("_START") for k in keys))
 
 
