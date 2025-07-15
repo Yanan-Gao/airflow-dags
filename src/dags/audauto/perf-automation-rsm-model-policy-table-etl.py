@@ -6,7 +6,7 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.eldorado.aws.emr_job_task import EmrJobTask
+from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
 from ttd.operators.dataset_check_sensor import DatasetCheckSensor
@@ -125,22 +125,33 @@ audience_policy_table_etl_cluster_task = EmrClusterTask(
 ###############################################################################
 # steps
 ###############################################################################
-audience_rsm_policy_table_generation_step = EmrJobTask(
+audience_rsm_policy_table_generation_step = AutoConfiguredEmrJobTask(
+    group_name="audience",
+    job_name="AudiencePolicyTableGeneratorJob",
     name="AudiencePolicyTableGenerator",
     class_name="com.thetradedesk.audience.jobs.policytable.AudiencePolicyTableGeneratorJob",
-    additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
-        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
-        (
-            "jars",
-            "s3://ttd-datprd-us-east-1/application/segment/bin/com.thetradedesk.segment.client-spark_3/2.0.9/com.thetradedesk.segment.client-spark_3-2.0.9-all.jar"
-        ),
-    ],
-    eldorado_config_option_pairs_list=[('model', "RSM"), ('date', run_date), ("userDownSampleHitPopulationRSM", "1000000"),
-                                       ("bidImpressionLookBack", "0"), ('saltToSampleUserRSM', '0BgGCE'),
-                                       ('policyTableResetSyntheticId', 'false'), ('seedCoalesceAfterFilter', '32'),
-                                       ('bidImpressionRepartitionNum', '4096'), ('allRSMSeed', 'true')],
-    executable_path=AUDIENCE_JAR,
-    timeout_timedelta=timedelta(hours=6)
+    emr_job_kwargs=dict(
+        additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
+            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
+            (
+                "jars",
+                "s3://ttd-datprd-us-east-1/application/segment/bin/com.thetradedesk.segment.client-spark_3/2.0.9/com.thetradedesk.segment.client-spark_3-2.0.9-all.jar",
+            ),
+        ],
+        eldorado_config_option_pairs_list=[
+            ('model', "RSM"),
+            ('date', run_date),
+            ("userDownSampleHitPopulationRSM", "1000000"),
+            ("bidImpressionLookBack", "0"),
+            ('saltToSampleUserRSM', '0BgGCE'),
+            ('policyTableResetSyntheticId', 'false'),
+            ('seedCoalesceAfterFilter', '32'),
+            ('bidImpressionRepartitionNum', '4096'),
+            ('allRSMSeed', 'true'),
+        ],
+        executable_path=AUDIENCE_JAR,
+        timeout_timedelta=timedelta(hours=6),
+    ),
 )
 
 # Final status check to ensure that all tasks have completed successfully
