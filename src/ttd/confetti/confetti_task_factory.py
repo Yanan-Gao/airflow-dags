@@ -153,15 +153,16 @@ def _prepare_runtime_config(
                 return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
             time.sleep(300)
 
-    # render all yaml templates in the same directory
+    # upload the rendered behavioral config
+    aws.load_string(rendered, key=cfg_key, bucket_name=c_bucket, replace=True)
+
+    # render and upload other yaml templates in the same directory
     d_bucket, d_prefix = aws._parse_bucket_and_key(tpl_dir, None)
     for key in aws.list_keys(prefix=d_prefix, bucket_name=d_bucket) or []:
-        if not key.endswith((".yml", ".yaml")):
+        if key.endswith("behavioral_config.yml") or not key.endswith((".yml", ".yaml")):
             continue
         tpl = aws.read_key(key, bucket_name=d_bucket)
         content = _render_template(tpl, {"date": run_date})
-        if key.endswith("behavioral_config.yml"):
-            content = rendered
         dest_key = runtime_base + key.split("/")[-1]
         dest_bucket, _ = aws._parse_bucket_and_key(dest_key, None)
         aws.load_string(content, key=dest_key, bucket_name=dest_bucket, replace=True)
