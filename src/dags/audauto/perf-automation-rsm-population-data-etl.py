@@ -5,7 +5,9 @@ from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
 from ttd.operators.dataset_check_sensor import DatasetCheckSensor
@@ -143,30 +145,43 @@ audience_population_data_etl_cluster_task = EmrClusterTask(
 ###############################################################################
 # steps
 ###############################################################################
-audience_rsm_population_data_generation_step = AutoConfiguredEmrJobTask(
+prep_population_data, gate_population_data = make_confetti_tasks(
     group_name="audience",
     job_name="PopulationInputDataGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+
+audience_rsm_population_data_generation_step = EmrJobTask(
     name="populationDataGenerator",
     class_name="com.thetradedesk.audience.jobs.PopulationInputDataGeneratorJob",
-    emr_job_kwargs=dict(
-        additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
-            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
-        ],
-        eldorado_config_option_pairs_list=[
-            ('date', run_date),
-            ('syntheticIdLength', '2000'),
-            ('audienceResultCoalesce', 32768),
-            ('ttdReadEnv', policy_table_read_env),
-            ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
-            ('TDIDDensityScoreReadableDatasetReadEnv', feature_store_read_env),
-            ('SeedDensityScoreReadableDatasetReadEnv', feature_store_read_env),
-            ('AggregatedSeedReadableDatasetReadEnv', policy_table_read_env),
-            ('ttdWriteEnv', override_env),
-        ],
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=4),
+    additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
+        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
+    ],
+    eldorado_config_option_pairs_list=[
+        ('date', run_date),
+        ('syntheticIdLength', '2000'),
+        ('audienceResultCoalesce', 32768),
+        ('ttdReadEnv', policy_table_read_env),
+        ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
+        ('TDIDDensityScoreReadableDatasetReadEnv', feature_store_read_env),
+        ('SeedDensityScoreReadableDatasetReadEnv', feature_store_read_env),
+        ('AggregatedSeedReadableDatasetReadEnv', policy_table_read_env),
+        ('ttdWriteEnv', override_env),
+        (
+            'confettiRuntimeConfigBasePath',
+            get_xcom_pull_jinja_string(
+                task_ids=prep_population_data.task_id, key='confetti_runtime_config_base_path'
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_population_data.task_id, key='audienceJarPath'
     ),
+    timeout_timedelta=timedelta(hours=4),
 )
+
+prep_population_data >> gate_population_data >> audience_rsm_population_data_generation_step
 
 write_population_success_file_task = OpTask(
     op=WriteDateToS3FileOperator(
@@ -185,6 +200,6 @@ final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 audience_population_data_etl_cluster_task.add_parallel_body_task(audience_rsm_population_data_generation_step)
 
 (
-    population_data_etl_dag >> dataset_sensor >> density_dataset_sensor >> audience_population_data_etl_cluster_task >>
+    population_data_etl_dag >> dataset_sensor >> density_dataset_sensor >> prep_population_data >> gate_population_data >> audience_population_data_etl_cluster_task >>
     write_population_success_file_task >> final_dag_status_step
 )

@@ -7,7 +7,9 @@ from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
 from ttd.ttdenv import TtdEnvFactory
 from ttd.eldorado.aws.emr_pyspark import S3PysparkEmrTask
-from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.script_bootstrap_action import ScriptBootstrapAction
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 
@@ -29,6 +31,8 @@ env = environment.execution_env
 
 override_env = "test" if env == "prodTest" else env
 imp_read_env = "prod"
+# confetti run date
+run_date = "{{ ds }}"
 # how much to sample from Geronimo data source
 sampling_rate = 3
 
@@ -201,21 +205,36 @@ emr_cluster_part1 = utils.create_emr_cluster(
 )
 
 # step 3: generate the model input
-gen_model_input = AutoConfiguredEmrJobTask(
+prep_gen_model_input, gate_gen_model_input = make_confetti_tasks(
     group_name="audience",
     job_name="Imp2BrModelInferenceDataGenerator",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+
+gen_model_input = EmrJobTask(
     name="Generate_Model_Input",
     class_name="com.thetradedesk.audience.jobs.Imp2BrModelInferenceDataGenerator",
-    emr_job_kwargs=dict(
-        additional_args_option_pairs_list=spark_options_list + [
-            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.4.0"),
-        ],
-        eldorado_config_option_pairs_list=job_setting_list
-        + [("feature_path", feature_path_origin), ("sampling_rate", sampling_rate)],
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=3),
+    additional_args_option_pairs_list=spark_options_list + [
+        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.4.0"),
+    ],
+    eldorado_config_option_pairs_list=job_setting_list
+    + [
+        ("feature_path", feature_path_origin),
+        ("sampling_rate", sampling_rate),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(
+                task_ids=prep_gen_model_input.task_id, key="confetti_runtime_config_base_path"
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_gen_model_input.task_id, key="audienceJarPath"
     ),
+    timeout_timedelta=timedelta(hours=3),
 )
+prep_gen_model_input >> gate_gen_model_input >> gen_model_input
 emr_cluster_part1.add_parallel_body_task(gen_model_input)
 
 ########################################################
@@ -262,38 +281,67 @@ emb_to_coldstorage = utils.create_emr_spark_job(
 )
 
 # Step 7: dot product
-emb_dot_product = AutoConfiguredEmrJobTask(
+prep_dot_product, gate_dot_product = make_confetti_tasks(
     group_name="audience",
     job_name="TdidEmbeddingDotProductGeneratorOOS",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+
+emb_dot_product = EmrJobTask(
     name="Embedding_DotProduct",
     class_name="com.thetradedesk.audience.jobs.TdidEmbeddingDotProductGeneratorOOS",
-    emr_job_kwargs=dict(
-        additional_args_option_pairs_list=spark_options_list,
-        eldorado_config_option_pairs_list=job_setting_list
-        + [("seed_emb_path", seed_emb_path), ("sampling_rate", sampling_rate)],
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=3),
+    additional_args_option_pairs_list=spark_options_list,
+    eldorado_config_option_pairs_list=job_setting_list
+    + [
+        ("seed_emb_path", seed_emb_path),
+        ("sampling_rate", sampling_rate),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(
+                task_ids=prep_dot_product.task_id, key="confetti_runtime_config_base_path"
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_dot_product.task_id, key="audienceJarPath"
     ),
+    timeout_timedelta=timedelta(hours=3),
 )
+prep_dot_product >> gate_dot_product >> emb_dot_product
 emr_cluster_part2.add_parallel_body_task(emb_dot_product)
 
 # Step 8: apply min max scaling
-score_min_max_scale_population = AutoConfiguredEmrJobTask(
+prep_score_scale, gate_score_scale = make_confetti_tasks(
     group_name="audience",
     job_name="TdidSeedScoreScale",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+
+score_min_max_scale_population = EmrJobTask(
     name="Score_Min_Max_Scale_Population_Score",
     class_name="com.thetradedesk.audience.jobs.TdidSeedScoreScale",
-    emr_job_kwargs=dict(
-        additional_args_option_pairs_list=
-        spark_options_list + [
-            ("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")
-        ],
-        eldorado_config_option_pairs_list=job_setting_list
-        + [("sampling_rate", sampling_rate)],
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=3),
+    additional_args_option_pairs_list=
+    spark_options_list + [
+        ("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")
+    ],
+    eldorado_config_option_pairs_list=job_setting_list
+    + [
+        ("sampling_rate", sampling_rate),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(
+                task_ids=prep_score_scale.task_id, key="confetti_runtime_config_base_path"
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_score_scale.task_id, key="audienceJarPath"
     ),
+    timeout_timedelta=timedelta(hours=3),
 )
+prep_score_scale >> gate_score_scale >> score_min_max_scale_population
 emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
 
 # Step 9: check data quality
@@ -302,7 +350,7 @@ data_quality_check = utils.create_emr_spark_job(
     emr_cluster_part2
 )
 
-rsm_etl_dag >> dataset_sensor >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
-emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
+rsm_etl_dag >> dataset_sensor >> prep_gen_model_input >> gate_gen_model_input >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
+emb_gen >> emb_aggregation >> emb_to_coldstorage >> prep_dot_product >> gate_dot_product >> emb_dot_product >> prep_score_scale >> gate_score_scale >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
