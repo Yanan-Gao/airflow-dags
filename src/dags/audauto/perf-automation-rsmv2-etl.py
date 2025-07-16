@@ -225,6 +225,7 @@ def create_rsm_job_task(name, eldorado_config_specific_list):
         job_name="RelevanceModelInputGeneratorJob",
         experiment_name=experiment,
         run_date=run_date,
+        task_id_prefix=f"{name}_",
     )
 
     job_task = EmrJobTask(

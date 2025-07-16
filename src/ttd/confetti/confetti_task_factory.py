@@ -280,12 +280,17 @@ def make_confetti_tasks(
         experiment_name: str = "",
         run_date: str = "{{ ds }}",
         check_timeout: timedelta = timedelta(hours=2),
+        task_id_prefix: str = "",
 ) -> Tuple[OpTask, OpTask]:
     """Return (prepare_task, gate_task) for Confetti jobs.
 
     Both tasks are ``OpTask`` instances wrapping an underlying Airflow
     ``PythonOperator`` and ``ShortCircuitOperator`` so that they can be
     chained with other :class:`BaseTask` objects using ``>>``.
+
+    ``task_id_prefix`` can be used to avoid duplicate task IDs when a
+    single DAG instantiates multiple Confetti tasks for the same
+    ``job_name``.
     """
 
     def _prep(**context):
@@ -302,7 +307,7 @@ def make_confetti_tasks(
         context["ti"].xcom_push(key="audienceJarPath", value=jar)
 
     prep_task = OpTask(op=PythonOperator(
-        task_id=f"prepare_confetti_{job_name}",
+        task_id=f"{task_id_prefix}prepare_confetti_{job_name}",
         python_callable=_prep,
     ))
 
@@ -310,7 +315,7 @@ def make_confetti_tasks(
         return not context["ti"].xcom_pull(task_ids=prep_task.task_id, key="skip_job")
 
     gate_task = OpTask(op=ShortCircuitOperator(
-        task_id=f"confetti_should_run_{job_name}",
+        task_id=f"{task_id_prefix}confetti_should_run_{job_name}",
         python_callable=_should_run,
     ))
 
