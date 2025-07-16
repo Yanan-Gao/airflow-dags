@@ -16,7 +16,9 @@ from ttd.docker import DockerEmrClusterTask, DockerCommandBuilder, DockerRunEmrT
 from ttd.ec2.emr_instance_types.graphics_optimized.g5 import G5
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.auto_configured_emr_job_task import AutoConfiguredEmrJobTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
 from ttd.operators.dataset_check_sensor import DatasetCheckSensor
@@ -669,37 +671,49 @@ audience_embedding_merge_cluster_task = EmrClusterTask(
     cluster_auto_termination_idle_timeout_seconds=300
 )
 
-audience_embedding_merge_step = AutoConfiguredEmrJobTask(
+prep_embedding_merge, gate_embedding_merge = make_confetti_tasks(
     group_name="audience",
     job_name="AudienceCalibrationAndMergeJob",
-    name="testEmbeddingMergeJob",
-    class_name="com.thetradedesk.audience.jobs.AudienceCalibrationAndMergeJob",
-    emr_job_kwargs=dict(
-        additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
-            ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
-        ],
-        eldorado_config_option_pairs_list=[
-            ('date', run_date),
-            ('anchorStartDate', '2025-04-14'),
-            ('syntheticIdLength', '2000'),
-            ('ttd.env', f'{override_env}'),
-            (
-                'tmpSenEmbeddingDataS3Path',
-                f'configdata/{override_env}/audience/embedding_temp/RSMV2/{sensitive}/v=1'
-            ),
-            (
-                'tmpNonSenEmbeddingDataS3Path',
-                f'configdata/{override_env}/audience/embedding_temp/RSMV2/{non_sensitive}/v=1'
-            ),
-            ('embeddingDataS3Path', f'configdata/{override_env}/audience/embedding/RSMV2/v=1'),
-            ('inferenceDataS3Path', f'data/{override_env}/audience/RSMV2/prediction/'),
-            ('AudienceModelPolicyReadableDatasetReadEnv', 'prod'),
-        ],
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=4),
-    ),
+    experiment_name=experiment,
+    run_date=run_date,
 )
 
+audience_embedding_merge_step = EmrJobTask(
+    name="testEmbeddingMergeJob",
+    class_name="com.thetradedesk.audience.jobs.AudienceCalibrationAndMergeJob",
+    additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
+        ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
+    ],
+    eldorado_config_option_pairs_list=[
+        ('date', run_date),
+        ('anchorStartDate', '2025-04-14'),
+        ('syntheticIdLength', '2000'),
+        ('ttd.env', f'{override_env}'),
+        (
+            'tmpSenEmbeddingDataS3Path',
+            f'configdata/{override_env}/audience/embedding_temp/RSMV2/{sensitive}/v=1'
+        ),
+        (
+            'tmpNonSenEmbeddingDataS3Path',
+            f'configdata/{override_env}/audience/embedding_temp/RSMV2/{non_sensitive}/v=1'
+        ),
+        ('embeddingDataS3Path', f'configdata/{override_env}/audience/embedding/RSMV2/v=1'),
+        ('inferenceDataS3Path', f'data/{override_env}/audience/RSMV2/prediction/'),
+        ('AudienceModelPolicyReadableDatasetReadEnv', 'prod'),
+        (
+            'confettiRuntimeConfigBasePath',
+            get_xcom_pull_jinja_string(
+                task_ids=prep_embedding_merge.task_id, key='confetti_runtime_config_base_path'
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_embedding_merge.task_id, key='audienceJarPath'
+    ),
+    timeout_timedelta=timedelta(hours=4),
+)
+
+prep_embedding_merge >> gate_embedding_merge >> audience_embedding_merge_step
 audience_embedding_merge_cluster_task.add_parallel_body_task(audience_embedding_merge_step)
 # audience_embedding_merge_cluster_task.add_parallel_body_task(audience_audience_embedding_merge_step)
 
@@ -739,7 +753,7 @@ rsm_training_dag >> etl_file_sensor >> rsm_training_sensitive_cluster_task
     rsm_training_non_sensitive_cluster_task, rsm_training_sensitive_cluster_task
 ] >> update_full_model_non_sensitive_current_file_task >> update_full_model_sensitive_current_file_task >> update_full_model_current_file_task >> update_br_model_sensitive_current_file_task >> update_br_model_nonsensitive_current_file_task >> model_merge_task >> update_full_model_success_file_task >> calibration_data_sensor
 
-calibration_data_sensor >> detect_previous_version >> prediction_data_sensor >> audience_embedding_merge_cluster_task
+calibration_data_sensor >> detect_previous_version >> prediction_data_sensor >> prep_embedding_merge >> gate_embedding_merge >> audience_embedding_merge_cluster_task
 
 (
     audience_embedding_merge_cluster_task >> update_policy_table_current_file_task >> update_embedding_success_file_task >>
