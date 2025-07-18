@@ -1,7 +1,7 @@
 import copy
 from datetime import timedelta, datetime
 
-from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.python import BranchPythonOperator
 
 from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
@@ -212,9 +212,6 @@ prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
     task_id_prefix="inc_",
 )
 
-dataset_sensor >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_full_cluster_task
-dataset_sensor >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_inc_cluster_task
-
 ###############################################################################
 # steps
 ###############################################################################
@@ -236,7 +233,7 @@ def create_rsm_threshold_task(prefix):
     return rsm_thresholds_generation_step
 
 
-def create_rsm_job_task(name, eldorado_config_specific_list, prep_task, gate_task):
+def create_rsm_job_task(name, eldorado_config_specific_list, prep_task):
     # common config
     eldorado_config_list = [('date', run_date), ('optInSeedType', 'Dynamic'),
                             ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
@@ -248,21 +245,29 @@ def create_rsm_job_task(name, eldorado_config_specific_list, prep_task, gate_tas
         name=name,
         class_name="com.thetradedesk.audience.jobs.modelinput.rsmv2.RelevanceModelInputGeneratorJob",
         additional_args_option_pairs_list=(
-            copy.deepcopy(spark_options_list) +
-            [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+            copy.deepcopy(spark_options_list) + [(
+                "jars",
+                "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar",
+            )]
         ),
-        eldorado_config_option_pairs_list=eldorado_config_list +
-        [("confettiEnv", confetti_env), ("experimentName", experiment),
-         (
-             "confettiRuntimeConfigBasePath",
-             get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"),
-         )],
+        eldorado_config_option_pairs_list=(
+            eldorado_config_list + [
+                ("confettiEnv", confetti_env),
+                ("experimentName", experiment),
+                (
+                    "confettiRuntimeConfigBasePath",
+                    get_xcom_pull_jinja_string(
+                        task_ids=prep_task.task_id,
+                        key="confetti_runtime_config_base_path",
+                    ),
+                ),
+            ]
+        ),
         action_on_failure="CONTINUE",
         executable_path=get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="audienceJarPath"),
         timeout_timedelta=timedelta(hours=8),
     )
 
-    prep_task >> gate_task >> job_task
     return job_task
 
 
@@ -334,13 +339,13 @@ rsm_inc_tasks_config = [
 ]
 
 for cfg in rsm_full_tasks_config:
-    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_full, gate_confetti_full)
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_full)
     rsmv2_etl_full_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_full_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Full"))
 
 for cfg in rsm_inc_tasks_config:
-    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_inc, gate_confetti_inc)
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_inc)
     rsmv2_etl_inc_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_inc_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Incremental"))
@@ -382,33 +387,20 @@ def _decide_full_or_increment(**context):
     remainder = diff_days % circle_days_for_full_training
 
     if remainder == 0:
-        return "full_tasks"
+        return "full_prepare_confetti_RelevanceModelInputGeneratorJob"
     else:
-        return "inc_tasks"
+        return "inc_prepare_confetti_RelevanceModelInputGeneratorJob"
 
 
 decide_full_or_increment = OpTask(
     op=BranchPythonOperator(task_id="decide_full_or_increment", python_callable=_decide_full_or_increment, provide_context=True)
 )
 
-
-def _run_full(**context):
-    print("run full")
-
-
-def _run_inc(**context):
-    print("run inc")
-
-
-full_tasks = OpTask(op=PythonOperator(task_id='full_tasks', python_callable=_run_full))
-
-inc_tasks = OpTask(op=PythonOperator(task_id='inc_tasks', python_callable=_run_inc))
-
 # Final status check to ensure that all tasks have completed successfully
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=adag))
 
 # Flow
 rsmv2_etl_dag >> dataset_sensor >> decide_full_or_increment
-decide_full_or_increment >> full_tasks >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
-decide_full_or_increment >> inc_tasks >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
 write_etl_success_file_task >> final_dag_status_step
