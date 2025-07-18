@@ -212,9 +212,6 @@ prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
     task_id_prefix="inc_",
 )
 
-dataset_sensor >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_full_cluster_task
-dataset_sensor >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_inc_cluster_task
-
 ###############################################################################
 # steps
 ###############################################################################
@@ -382,33 +379,20 @@ def _decide_full_or_increment(**context):
     remainder = diff_days % circle_days_for_full_training
 
     if remainder == 0:
-        return "full_tasks"
+        return "full_prepare_confetti_RelevanceModelInputGeneratorJob"
     else:
-        return "inc_tasks"
+        return "inc_prepare_confetti_RelevanceModelInputGeneratorJob"
 
 
 decide_full_or_increment = OpTask(
     op=BranchPythonOperator(task_id="decide_full_or_increment", python_callable=_decide_full_or_increment, provide_context=True)
 )
 
-
-def _run_full(**context):
-    print("run full")
-
-
-def _run_inc(**context):
-    print("run inc")
-
-
-full_tasks = OpTask(op=PythonOperator(task_id='full_tasks', python_callable=_run_full))
-
-inc_tasks = OpTask(op=PythonOperator(task_id='inc_tasks', python_callable=_run_inc))
-
 # Final status check to ensure that all tasks have completed successfully
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=adag))
 
 # Flow
 rsmv2_etl_dag >> dataset_sensor >> decide_full_or_increment
-decide_full_or_increment >> full_tasks >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
-decide_full_or_increment >> inc_tasks >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
 write_etl_success_file_task >> final_dag_status_step
