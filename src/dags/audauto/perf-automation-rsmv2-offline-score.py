@@ -16,7 +16,7 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from dags.audauto.utils import utils
 import boto3
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 emr_capacity = 150
 AUDIENCE_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
@@ -347,7 +347,23 @@ data_quality_check = utils.create_emr_spark_job(
     emr_cluster_part2
 )
 
-rsm_etl_dag >> dataset_sensor >> prep_gen_model_input >> gate_gen_model_input >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> prep_dot_product >> gate_dot_product >> prep_score_scale >> gate_score_scale >> emr_cluster_part2
+part2_cluster_gate = OpTask(
+    op=ShortCircuitOperator(
+        task_id="should_run_part2_cluster",
+        python_callable=lambda **c: any(
+            c["ti"].xcom_pull(task_ids=t.task_id)
+            for t in [gate_dot_product, gate_score_scale]
+        ),
+    )
+)
+
+gate_dot_product >> emb_dot_product
+gate_score_scale >> score_min_max_scale_population
+
+rsm_etl_dag >> dataset_sensor >> prep_gen_model_input >> gate_gen_model_input >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding
+clean_up_raw_embedding >> prep_dot_product >> gate_dot_product >> part2_cluster_gate
+clean_up_raw_embedding >> prep_score_scale >> gate_score_scale >> part2_cluster_gate
+part2_cluster_gate >> emr_cluster_part2
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
