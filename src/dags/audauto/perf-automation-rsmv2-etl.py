@@ -203,6 +203,8 @@ prep_confetti_full, gate_confetti_full = make_confetti_tasks(
     run_date=run_date,
     task_id_prefix="full_",
 )
+prep_confetti_full.as_taskgroup(rsmv2_etl_full_cluster_task.task_id)
+gate_confetti_full.as_taskgroup(rsmv2_etl_full_cluster_task.task_id)
 
 prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
     group_name="audience",
@@ -211,11 +213,11 @@ prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
     run_date=run_date,
     task_id_prefix="inc_",
 )
+prep_confetti_inc.as_taskgroup(rsmv2_etl_inc_cluster_task.task_id)
+gate_confetti_inc.as_taskgroup(rsmv2_etl_inc_cluster_task.task_id)
 
-dataset_sensor >> prep_confetti_full
-dataset_sensor >> prep_confetti_inc
-prep_confetti_full >> gate_confetti_full
-prep_confetti_inc >> gate_confetti_inc
+dataset_sensor >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_full_cluster_task
+dataset_sensor >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_inc_cluster_task
 
 ###############################################################################
 # steps
@@ -250,25 +252,28 @@ def create_rsm_job_task(name, eldorado_config_specific_list, prep_task, gate_tas
         name=name,
         class_name="com.thetradedesk.audience.jobs.modelinput.rsmv2.RelevanceModelInputGeneratorJob",
         additional_args_option_pairs_list=(
-            copy.deepcopy(spark_options_list) +
-            [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+            copy.deepcopy(spark_options_list)
+            + [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
         ),
-        eldorado_config_option_pairs_list=(
-            eldorado_config_list + [
-                ("confettiEnv", confetti_env),
-                ("experimentName", experiment),
-                (
-                    "confettiRuntimeConfigBasePath",
-                    get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"),
+        eldorado_config_option_pairs_list=eldorado_config_list
+        + [
+            ("confettiEnv", confetti_env),
+            ("experimentName", experiment),
+            (
+                "confettiRuntimeConfigBasePath",
+                get_xcom_pull_jinja_string(
+                    task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"
                 ),
-            ]
-        ),
+            )
+        ],
         action_on_failure="CONTINUE",
-        executable_path=get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="audienceJarPath"),
+        executable_path=get_xcom_pull_jinja_string(
+            task_ids=prep_task.task_id, key="audienceJarPath"
+        ),
         timeout_timedelta=timedelta(hours=8),
     )
 
-    gate_task >> job_task
+    prep_task >> gate_task >> job_task
     return job_task
 
 
