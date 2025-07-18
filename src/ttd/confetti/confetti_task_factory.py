@@ -9,6 +9,7 @@ import time
 # import os
 from typing import Tuple
 import yaml
+import subprocess
 
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
@@ -237,6 +238,40 @@ def _upload_additional_configs(
         aws.load_string(content, key=dest_key, bucket_name=_CONFIG_BUCKET, replace=True)
 
 
+def _copy_s3_prefix(aws: AwsCloudStorage, src: str, dst: str) -> None:
+    """Recursively copy S3 objects.
+
+    ``src`` and ``dst`` must be full S3 URIs. If ``src`` points to a single
+    object the contents are copied to ``dst``. If ``src`` points to a prefix,
+    all objects under the prefix are copied into ``dst`` while preserving their
+    relative paths.
+
+    Errors from :class:`AwsCloudStorage` bubble up so that the caller can fall
+    back to the normal run when copying fails.
+    """
+
+    src_bucket, src_prefix = aws._parse_bucket_and_key(src, None)
+    dst_bucket, dst_prefix = aws._parse_bucket_and_key(dst, None)
+
+    keys = aws.list_keys(prefix=src_prefix, bucket_name=src_bucket) or []
+    if not keys and aws.check_for_key(src_prefix, src_bucket):
+        keys = [src_prefix]
+    if not keys:
+        raise ValueError(f"No objects found at {src}")
+
+    if len(keys) == 1 and not src.endswith("/"):
+        aws.copy_file(
+            src_key=src_prefix,
+            src_bucket_name=src_bucket,
+            dst_key=dst_prefix,
+            dst_bucket_name=dst_bucket,
+        ).get()
+    else:
+        src_uri = f"s3://{src_bucket}/{src_prefix.rstrip('/')}"
+        dst_uri = f"s3://{dst_bucket}/{dst_prefix.rstrip('/')}"
+        subprocess.check_call(["aws", "s3", "sync", src_uri, dst_uri])
+
+
 def _prepare_runtime_config(
         group: str,
         job: str,
@@ -312,7 +347,34 @@ def make_confetti_tasks(
     ))
 
     def _should_run(**context):
-        return not context["ti"].xcom_pull(task_ids=prep_task.task_id, key="skip_job")
+        ti = context["ti"]
+        skip = ti.xcom_pull(task_ids=prep_task.task_id, key="skip_job")
+        if not skip:
+            return True
+
+        runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
+
+        try:
+            aws = AwsCloudStorage()
+            run_vars = _collect_job_run_level_variables(run_date=context.get("ds", run_date))
+            env = resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment_name)
+            tpl_dir = _template_dir(env, experiment_name, group_name, job_name)
+            out_tpl_key = tpl_dir + "output_config.yml"
+            tpl = aws.read_key(out_tpl_key, bucket_name=_CONFIG_BUCKET)
+            rendered = _render_template(tpl, run_vars)
+            current_out_path = yaml.safe_load(rendered)["out_path"]
+
+            runtime_out_key = runtime_base.rstrip("/") + "/output_config.yml"
+            stored_rendered = aws.read_key(runtime_out_key)
+            prev_out_path = yaml.safe_load(stored_rendered)["out_path"]
+
+            if prev_out_path != current_out_path:
+                _copy_s3_prefix(aws, prev_out_path, current_out_path)
+
+            return False
+        except Exception as exc:  # pragma: no cover - unexpected failure
+            logger.exception("Fast pass copy failed: %s", exc)
+            return True
 
     gate_task = OpTask(op=ShortCircuitOperator(
         task_id=f"{task_id_prefix}confetti_should_run_{job_name}",
