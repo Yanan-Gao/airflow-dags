@@ -221,6 +221,7 @@ from ttd.confetti.confetti_task_factory import (  # noqa: E402
     _sha256_b64,
     _inject_audience_jar_path,
     _prepare_runtime_config,
+    _copy_s3_prefix,
     make_confetti_tasks,
 )
 
@@ -350,3 +351,101 @@ class AudienceJarPathTest(unittest.TestCase):
         tpl = "audienceJarBranch: master\naudienceJarVersion: latest"
         with self.assertRaisesRegex(ValueError, "No version"):
             _inject_audience_jar_path(tpl, mock_aws)
+
+
+class FastPassCopyTest(unittest.TestCase):
+
+    def _parse(self, k, b=None):
+        if b is None and str(k).startswith("s3://"):
+            no_scheme = str(k)[5:]
+            bucket, key_path = no_scheme.split("/", 1)
+            return bucket, key_path
+        return b or "b", k
+
+    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
+    def test_should_run_copies_output_on_fast_pass(self, mock_get_env, mock_storage, mock_call):
+        mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
+        instance = mock_storage.return_value
+        instance._parse_bucket_and_key.side_effect = self._parse
+        instance.list_keys.return_value = ["p/a"]
+        instance.copy_file.return_value = type("S", (), {"get": lambda self: None})()
+
+        def _read(key, bucket_name=None):
+            if "runtime-configs" in str(key):
+                return "out_path: s3://b/p/"
+            return "out_path: s3://b/q/"
+
+        instance.read_key.side_effect = _read
+
+        prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
+        ti = MagicMock()
+        ti.xcom_pull.side_effect = lambda task_ids, key: {
+            "skip_job": True,
+            "confetti_runtime_config_base_path": "s3://b/runtime-configs/run1/",
+        }[key]
+        should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
+        self.assertFalse(should_run)
+        mock_call.assert_called()
+        instance.copy_file.assert_not_called()
+
+    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
+    def test_should_run_no_copy_when_same_path(self, mock_get_env, mock_storage, mock_call):
+        mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
+        instance = mock_storage.return_value
+        instance._parse_bucket_and_key.side_effect = self._parse
+        instance.list_keys.return_value = ["p/a"]
+        instance.copy_file.return_value = type("S", (), {"get": lambda self: None})()
+        instance.read_key.return_value = "out_path: s3://b/p/"
+
+        prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
+        ti = MagicMock()
+        ti.xcom_pull.side_effect = lambda task_ids, key: {
+            "skip_job": True,
+            "confetti_runtime_config_base_path": "s3://b/runtime-configs/run1/",
+        }[key]
+        should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
+        self.assertFalse(should_run)
+        mock_call.assert_not_called()
+        instance.copy_file.assert_not_called()
+
+    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
+    def test_copy_handles_single_file(self, mock_call):
+        aws = MagicMock()
+        aws._parse_bucket_and_key.side_effect = self._parse
+        aws.list_keys.return_value = []
+        aws.check_for_key.return_value = True
+        aws.copy_file.return_value = type("S", (), {"get": lambda self: None})()
+
+        _copy_s3_prefix(
+            aws,
+            "s3://b/p/file.txt",
+            "s3://b/q/file.txt",
+        )
+
+        aws.copy_file.assert_called_with(
+            src_key="p/file.txt",
+            src_bucket_name="b",
+            dst_key="q/file.txt",
+            dst_bucket_name="b",
+        )
+        mock_call.assert_not_called()
+
+    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
+    def test_copy_handles_prefix(self, mock_call):
+        aws = MagicMock()
+        aws._parse_bucket_and_key.side_effect = self._parse
+        aws.list_keys.return_value = ["p/a", "p/b"]
+        aws.copy_file.return_value = type("S", (), {"get": lambda self: None})()
+
+        _copy_s3_prefix(
+            aws,
+            "s3://b/p/",
+            "s3://b/q/",
+        )
+
+        mock_call.assert_called_with(["aws", "s3", "sync", "s3://b/p", "s3://b/q"])
+        aws.copy_file.assert_not_called()
