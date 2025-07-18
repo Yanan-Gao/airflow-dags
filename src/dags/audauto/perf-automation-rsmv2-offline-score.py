@@ -234,8 +234,6 @@ gen_model_input = EmrJobTask(
     ),
     timeout_timedelta=timedelta(hours=3),
 )
-emr_cluster_part1.add_sequential_body_task(prep_gen_model_input)
-emr_cluster_part1.add_sequential_body_task(gate_gen_model_input)
 emr_cluster_part1.add_parallel_body_task(gen_model_input)
 
 ########################################################
@@ -309,8 +307,6 @@ emb_dot_product = EmrJobTask(
     ),
     timeout_timedelta=timedelta(hours=3),
 )
-emr_cluster_part2.add_sequential_body_task(prep_dot_product)
-emr_cluster_part2.add_sequential_body_task(gate_dot_product)
 emr_cluster_part2.add_parallel_body_task(emb_dot_product)
 
 # Step 8: apply min max scaling
@@ -343,8 +339,6 @@ score_min_max_scale_population = EmrJobTask(
     ),
     timeout_timedelta=timedelta(hours=3),
 )
-emr_cluster_part2.add_sequential_body_task(prep_score_scale)
-emr_cluster_part2.add_sequential_body_task(gate_score_scale)
 emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
 
 # Step 9: check data quality
@@ -353,7 +347,7 @@ data_quality_check = utils.create_emr_spark_job(
     emr_cluster_part2
 )
 
-rsm_etl_dag >> dataset_sensor >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
+rsm_etl_dag >> dataset_sensor >> prep_gen_model_input >> gate_gen_model_input >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> prep_dot_product >> gate_dot_product >> prep_score_scale >> gate_score_scale >> emr_cluster_part2
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
