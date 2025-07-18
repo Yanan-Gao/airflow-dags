@@ -195,6 +195,28 @@ rsmv2_etl_inc_cluster_task = EmrClusterTask(
     retries=0
 )
 
+# Prepare Confetti runtime config once per cluster
+prep_confetti_full, gate_confetti_full = make_confetti_tasks(
+    group_name="audience",
+    job_name="RelevanceModelInputGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+    task_id_prefix="full_",
+)
+
+prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
+    group_name="audience",
+    job_name="RelevanceModelInputGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+    task_id_prefix="inc_",
+)
+
+dataset_sensor >> prep_confetti_full
+dataset_sensor >> prep_confetti_inc
+prep_confetti_full >> gate_confetti_full
+prep_confetti_inc >> gate_confetti_inc
+
 ###############################################################################
 # steps
 ###############################################################################
@@ -216,48 +238,38 @@ def create_rsm_threshold_task(prefix):
     return rsm_thresholds_generation_step
 
 
-def create_rsm_job_task(name, eldorado_config_specific_list):
+def create_rsm_job_task(name, eldorado_config_specific_list, prep_task, gate_task):
     # common config
     eldorado_config_list = [('date', run_date), ('optInSeedType', 'Dynamic'),
                             ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
                             ('AggregatedSeedReadableDatasetReadEnv', policy_table_read_env),
                             ('FeatureStoreReadEnv', feature_store_read_env), ('posNegRatio', '50'), ("ttdWriteEnv", override_env)]
     eldorado_config_list.extend(eldorado_config_specific_list)
-    prep_task, gate_task = make_confetti_tasks(
-        group_name="audience",
-        job_name="RelevanceModelInputGeneratorJob",
-        experiment_name=experiment,
-        run_date=run_date,
-        task_id_prefix=f"{name}_",
-    )
 
     job_task = EmrJobTask(
         name=name,
         class_name="com.thetradedesk.audience.jobs.modelinput.rsmv2.RelevanceModelInputGeneratorJob",
         additional_args_option_pairs_list=(
-            copy.deepcopy(spark_options_list)
-            + [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+            copy.deepcopy(spark_options_list) +
+            [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
         ),
-        eldorado_config_option_pairs_list=eldorado_config_list
-        + [
-            ("confettiEnv", confetti_env),
-            ("experimentName", experiment),
-            (
-                "confettiRuntimeConfigBasePath",
-                get_xcom_pull_jinja_string(
-                    task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"
+        eldorado_config_option_pairs_list=(
+            eldorado_config_list + [
+                ("confettiEnv", confetti_env),
+                ("experimentName", experiment),
+                (
+                    "confettiRuntimeConfigBasePath",
+                    get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"),
                 ),
-            )
-        ],
-        action_on_failure="CONTINUE",
-        executable_path=get_xcom_pull_jinja_string(
-            task_ids=prep_task.task_id, key="audienceJarPath"
+            ]
         ),
+        action_on_failure="CONTINUE",
+        executable_path=get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="audienceJarPath"),
         timeout_timedelta=timedelta(hours=8),
     )
 
-    prep_task >> gate_task >> job_task
-    return prep_task, gate_task, job_task
+    gate_task >> job_task
+    return job_task
 
 
 featureReadPathPrefix = "profiles/source=bidsimpression/index=TDID/job=DailyTDIDDensityScoreSplitJobSub"
@@ -328,15 +340,13 @@ rsm_inc_tasks_config = [
 ]
 
 for cfg in rsm_full_tasks_config:
-    prep, gate, job = create_rsm_job_task(cfg["name"], cfg["config"])
-    dataset_sensor >> prep
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_full, gate_confetti_full)
     rsmv2_etl_full_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_full_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Full"))
 
 for cfg in rsm_inc_tasks_config:
-    prep, gate, job = create_rsm_job_task(cfg["name"], cfg["config"])
-    dataset_sensor >> prep
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_inc, gate_confetti_inc)
     rsmv2_etl_inc_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_inc_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Incremental"))
