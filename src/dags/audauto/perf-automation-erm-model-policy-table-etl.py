@@ -116,7 +116,7 @@ audience_policy_table_etl_cluster_task = EmrClusterTask(
 pixels_config = f"'s3://thetradedesk-useast-hadoop/Data_Science/Yang/audience_extension/fake_data/erm_blockblast_selected_seed/{next_date}/'"
 audience_erm_policy_table_generation_step = EmrJobTask(
     name="AudiencePolicyTableGenerator",
-    class_name="com.thetradedesk.audience.jobs.policytable.AudiencePolicyTableGeneratorJob",
+    class_name="com.thetradedesk.audience.jobs.policytable.AEMGraphPolicyTableGeneratorJob",
     additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
         ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
     ],
