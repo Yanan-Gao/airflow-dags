@@ -7,6 +7,7 @@ from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
 from ttd.ttdenv import TtdEnvFactory
 from ttd.eldorado.aws.emr_pyspark import S3PysparkEmrTask
+import copy
 from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
@@ -17,6 +18,20 @@ from dags.audauto.utils import utils
 import boto3
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
+
+
+def create_emr_spark_job_sequential(name, class_name, jar, spark_options_list, job_setting_list, emr,
+                                    timeout=timedelta(hours=3)):
+    job = EmrJobTask(
+        name=name,
+        class_name=class_name,
+        additional_args_option_pairs_list=copy.deepcopy(spark_options_list),
+        eldorado_config_option_pairs_list=copy.deepcopy(job_setting_list),
+        executable_path=jar,
+        timeout_timedelta=timeout,
+    )
+    emr.add_sequential_body_task(job)
+    return job
 
 emr_capacity = 150
 AUDIENCE_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
@@ -269,18 +284,26 @@ emb_gen = S3PysparkEmrTask(
     cluster_specs=emr_cluster_part2.cluster_specs,
     command_line_arguments=arguments,
 )
-emr_cluster_part2.add_parallel_body_task(emb_gen)
+emr_cluster_part2.add_sequential_body_task(emb_gen)
 
 # Step 5: aggregate raw embedding into TDID level
-emb_aggregation = utils.create_emr_spark_job(
-    "Embedding_Aggregation", "com.thetradedesk.audience.jobs.TdidEmbeddingAggregate", AUDIENCE_JAR, spark_options_list, job_setting_list,
-    emr_cluster_part2
+emb_aggregation = create_emr_spark_job_sequential(
+    "Embedding_Aggregation",
+    "com.thetradedesk.audience.jobs.TdidEmbeddingAggregate",
+    AUDIENCE_JAR,
+    spark_options_list,
+    job_setting_list,
+    emr_cluster_part2,
 )
 
 # Step 6: upload aggregated TTD level embeddings to coldstorage bucket so they would be picked by the process that send them.
-emb_to_coldstorage = utils.create_emr_spark_job(
-    "UploadEmbeddings", "com.thetradedesk.audience.jobs.UploadEmbeddings", AUDIENCE_JAR, spark_options_list, job_setting_list,
-    emr_cluster_part2
+emb_to_coldstorage = create_emr_spark_job_sequential(
+    "UploadEmbeddings",
+    "com.thetradedesk.audience.jobs.UploadEmbeddings",
+    AUDIENCE_JAR,
+    spark_options_list,
+    job_setting_list,
+    emr_cluster_part2,
 )
 
 # Step 7: dot product
@@ -313,7 +336,7 @@ emb_dot_product = EmrJobTask(
     ),
     timeout_timedelta=timedelta(hours=3),
 )
-emr_cluster_part2.add_parallel_body_task(emb_dot_product)
+emr_cluster_part2.add_sequential_body_task(emb_dot_product)
 
 # Step 8: apply min max scaling
 prep_score_scale, gate_score_scale = make_confetti_tasks(
@@ -347,12 +370,16 @@ score_min_max_scale_population = EmrJobTask(
     ),
     timeout_timedelta=timedelta(hours=3),
 )
-emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
+emr_cluster_part2.add_sequential_body_task(score_min_max_scale_population)
 
 # Step 9: check data quality
-data_quality_check = utils.create_emr_spark_job(
-    "data_quality_check", "com.thetradedesk.audience.jobs.TdidSeedScoreQualityCheck", AUDIENCE_JAR, spark_options_list, job_setting_list,
-    emr_cluster_part2
+data_quality_check = create_emr_spark_job_sequential(
+    "data_quality_check",
+    "com.thetradedesk.audience.jobs.TdidSeedScoreQualityCheck",
+    AUDIENCE_JAR,
+    spark_options_list,
+    job_setting_list,
+    emr_cluster_part2,
 )
 
 part2_cluster_gate = OpTask(
