@@ -5,6 +5,9 @@ from ttd.operators.dataset_check_sensor import DatasetCheckSensor
 from ttd.operators.final_dag_status_check_operator import FinalDagStatusCheckOperator
 from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
+from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.ttdenv import TtdEnvFactory
 from ttd.eldorado.aws.emr_pyspark import S3PysparkEmrTask
 from ttd.eldorado.script_bootstrap_action import ScriptBootstrapAction
@@ -25,6 +28,8 @@ ebs_root_volume_size = 64
 
 environment = TtdEnvFactory.get_from_system()
 env = environment.execution_env
+run_date = "{{ ds }}"
+confetti_env = resolve_env(env, experiment)
 
 override_env = "test" if env == "prodTest" else env
 imp_read_env = "prod"
@@ -195,16 +200,37 @@ def delete_s3_objects(**kwargs):
     utils.delete_s3_objects_with_prefix(s3_path=s3_path)
 
 
+prep_confetti_imp2br, gate_confetti_imp2br = make_confetti_tasks(
+    group_name="audience",
+    job_name="Imp2BrModelInferenceDataGenerator",
+    experiment_name=experiment,
+    run_date=run_date,
+)
 emr_cluster_part1 = utils.create_emr_cluster(
     name="AUDAUTO-Audience-RSMV2-Relevance-Offline-part1", capacity=emr_capacity, bootstrap_script_actions=bootstrap_script_actions
 )
 
 # step 3: generate the model input
-gen_model_input = utils.create_emr_spark_job(
-    "Generate_Model_Input", "com.thetradedesk.audience.jobs.Imp2BrModelInferenceDataGenerator", AUDIENCE_JAR, spark_options_list + [
+gen_model_input = EmrJobTask(
+    name="Generate_Model_Input",
+    class_name="com.thetradedesk.audience.jobs.Imp2BrModelInferenceDataGenerator",
+    additional_args_option_pairs_list=spark_options_list + [
         ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.4.0"),
-    ], job_setting_list + [("feature_path", feature_path_origin), ("sampling_rate", sampling_rate)], emr_cluster_part1
+    ],
+    eldorado_config_option_pairs_list=job_setting_list + [
+        ("feature_path", feature_path_origin),
+        ("sampling_rate", sampling_rate),
+        ("confettiEnv", confetti_env),
+        ("experimentName", experiment),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(task_ids=prep_confetti_imp2br.task_id, key="confetti_runtime_config_base_path"),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_imp2br.task_id, key="audienceJarPath"),
+    timeout_timedelta=timedelta(hours=3),
 )
+emr_cluster_part1.add_parallel_body_task(gen_model_input)
 
 ########################################################
 # Part 2, wait for model, then proceed
@@ -223,6 +249,18 @@ clean_up_raw_embedding = OpTask(
 
 emr_cluster_part2 = utils.create_emr_cluster(
     name="AUDAUTO-Audience-RSMV2-Relevance-Offline-part2", capacity=emr_capacity, bootstrap_script_actions=bootstrap_script_actions
+)
+prep_confetti_dot_product, gate_confetti_dot_product = make_confetti_tasks(
+    group_name="audience",
+    job_name="TdidEmbeddingDotProductGeneratorOOS",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+prep_confetti_scale, gate_confetti_scale = make_confetti_tasks(
+    group_name="audience",
+    job_name="TdidSeedScoreScale",
+    experiment_name=experiment,
+    run_date=run_date,
 )
 
 # Step 4: generate the raw bid request level embedding, by model prediction with spark
@@ -250,20 +288,43 @@ emb_to_coldstorage = utils.create_emr_spark_job(
 )
 
 # Step 7: dot product
-emb_dot_product = utils.create_emr_spark_job(
-    "Embedding_DotProduct", "com.thetradedesk.audience.jobs.TdidEmbeddingDotProductGeneratorOOS", AUDIENCE_JAR, spark_options_list,
-    job_setting_list + [("seed_emb_path", seed_emb_path), ("sampling_rate", sampling_rate)], emr_cluster_part2
+emb_dot_product = EmrJobTask(
+    name="Embedding_DotProduct",
+    class_name="com.thetradedesk.audience.jobs.TdidEmbeddingDotProductGeneratorOOS",
+    additional_args_option_pairs_list=spark_options_list,
+    eldorado_config_option_pairs_list=job_setting_list + [
+        ("seed_emb_path", seed_emb_path),
+        ("sampling_rate", sampling_rate),
+        ("confettiEnv", confetti_env),
+        ("experimentName", experiment),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(task_ids=prep_confetti_dot_product.task_id, key="confetti_runtime_config_base_path"),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_dot_product.task_id, key="audienceJarPath"),
+    timeout_timedelta=timedelta(hours=3),
 )
+emr_cluster_part2.add_parallel_body_task(emb_dot_product)
 
 # Step 8: apply min max scaling
-score_min_max_scale_population = utils.create_emr_spark_job(
-    "Score_Min_Max_Scale_Population_Score",
-    "com.thetradedesk.audience.jobs.TdidSeedScoreScale",
-    AUDIENCE_JAR,
-    spark_options_list + [("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")],  # skip _SUCCESS file generation
-    job_setting_list + [("sampling_rate", sampling_rate)],
-    emr_cluster_part2
+score_min_max_scale_population = EmrJobTask(
+    name="Score_Min_Max_Scale_Population_Score",
+    class_name="com.thetradedesk.audience.jobs.TdidSeedScoreScale",
+    additional_args_option_pairs_list=spark_options_list + [("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")],
+    eldorado_config_option_pairs_list=job_setting_list + [
+        ("sampling_rate", sampling_rate),
+        ("confettiEnv", confetti_env),
+        ("experimentName", experiment),
+        (
+            "confettiRuntimeConfigBasePath",
+            get_xcom_pull_jinja_string(task_ids=prep_confetti_scale.task_id, key="confetti_runtime_config_base_path"),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_scale.task_id, key="audienceJarPath"),
+    timeout_timedelta=timedelta(hours=3),
 )
+emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
 
 # Step 9: check data quality
 data_quality_check = utils.create_emr_spark_job(
@@ -271,7 +332,12 @@ data_quality_check = utils.create_emr_spark_job(
     emr_cluster_part2
 )
 
-rsm_etl_dag >> dataset_sensor >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
+rsm_etl_dag >> dataset_sensor >> prep_confetti_imp2br >> gate_confetti_imp2br >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
+gate_confetti_imp2br >> gen_model_input
+clean_up_raw_embedding >> prep_confetti_dot_product
+clean_up_raw_embedding >> prep_confetti_scale
+prep_confetti_dot_product >> gate_confetti_dot_product >> emb_dot_product
+prep_confetti_scale >> gate_confetti_scale >> score_min_max_scale_population
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
