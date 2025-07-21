@@ -6,6 +6,12 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_post_processing_task,
+)
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
@@ -13,6 +19,7 @@ from ttd.operators.dataset_check_sensor import DatasetCheckSensor
 from ttd.operators.final_dag_status_check_operator import FinalDagStatusCheckOperator
 from ttd.slack.slack_groups import AUDAUTO
 from ttd.tasks.op import OpTask
+from ttd.ttdenv import TtdEnvFactory
 
 java_settings_list = [("spark.sql.objectHashAggregate.sortBased.fallbackThreshold", "4096")]
 
@@ -35,8 +42,15 @@ application_configuration = [{
     }
 }]
 
+environment = TtdEnvFactory.get_from_system()
+env = environment.execution_env
+
+experiment = "yanan-demo"
+confetti_env = resolve_env(env, experiment)
+
+
 run_date = "{{ data_interval_start.to_date_string() }}"
-AUDIENCE_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
+# AUDIENCE_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
 
 audience_policy_table_etl_dag = TtdDag(
     dag_id="perf-automation-rsm-model-policy-table-etl",
@@ -125,27 +139,60 @@ audience_policy_table_etl_cluster_task = EmrClusterTask(
 ###############################################################################
 # steps
 ###############################################################################
+prep_policy_table, gate_policy_table = make_confetti_tasks(
+    group_name="audience",
+    job_name="RSMGraphPolicyTableGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+)
+
 audience_rsm_policy_table_generation_step = EmrJobTask(
     name="AudiencePolicyTableGenerator",
-    class_name="com.thetradedesk.audience.jobs.policytable.AudiencePolicyTableGeneratorJob",
+    class_name="com.thetradedesk.audience.jobs.policytable.RSMGraphPolicyTableGeneratorJob",
     additional_args_option_pairs_list=copy.deepcopy(spark_options_list) + [
         ("packages", "com.linkedin.sparktfrecord:spark-tfrecord_2.12:0.3.4"),
         (
             "jars",
-            "s3://ttd-datprd-us-east-1/application/segment/bin/com.thetradedesk.segment.client-spark_3/2.0.9/com.thetradedesk.segment.client-spark_3-2.0.9-all.jar"
+            "s3://ttd-datprd-us-east-1/application/segment/bin/com.thetradedesk.segment.client-spark_3/2.0.9/com.thetradedesk.segment.client-spark_3-2.0.9-all.jar",
         ),
     ],
-    eldorado_config_option_pairs_list=[('model', "RSM"), ('date', run_date), ("userDownSampleHitPopulationRSM", "1000000"),
-                                       ("bidImpressionLookBack", "0"), ('saltToSampleUserRSM', '0BgGCE'),
-                                       ('policyTableResetSyntheticId', 'false'), ('seedCoalesceAfterFilter', '32'),
-                                       ('bidImpressionRepartitionNum', '4096'), ('allRSMSeed', 'true')],
-    executable_path=AUDIENCE_JAR,
-    timeout_timedelta=timedelta(hours=6)
+    eldorado_config_option_pairs_list=[
+        ('model', "RSM"),
+        ('date', run_date),
+        ("userDownSampleHitPopulationRSM", "1000000"),
+        ("bidImpressionLookBack", "0"),
+        ('saltToSampleUserRSM', '0BgGCE'),
+        ('policyTableResetSyntheticId', 'false'),
+        ('seedCoalesceAfterFilter', '32'),
+        ('bidImpressionRepartitionNum', '4096'),
+        ('allRSMSeed', 'true'),
+        ("confettiEnv", confetti_env),
+        ("experimentName", experiment),
+        (
+            'confettiRuntimeConfigBasePath',
+            get_xcom_pull_jinja_string(
+                task_ids=prep_policy_table.task_id, key="confetti_runtime_config_base_path"
+            ),
+        ),
+    ],
+    executable_path=get_xcom_pull_jinja_string(
+        task_ids=prep_policy_table.task_id, key="audienceJarPath"
+    ),
+    timeout_timedelta=timedelta(hours=6),
+)
+
+prep_policy_table >> gate_policy_table >> audience_rsm_policy_table_generation_step
+
+post_processing_task = make_confetti_post_processing_task(
+    job_name="RSMGraphPolicyTableGeneratorJob",
+    prep_task=prep_policy_table,
+    cluster_id=audience_policy_table_etl_cluster_task.cluster_id,
 )
 
 # Final status check to ensure that all tasks have completed successfully
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_policy_table_etl_cluster_task.add_parallel_body_task(audience_rsm_policy_table_generation_step)
+audience_policy_table_etl_cluster_task >> post_processing_task >> final_dag_status_step
 
-audience_policy_table_etl_dag >> dataset_sensor >> audience_policy_table_etl_cluster_task >> final_dag_status_step
+audience_policy_table_etl_dag >> dataset_sensor >> prep_policy_table >> gate_policy_table >> audience_policy_table_etl_cluster_task >> final_dag_status_step
