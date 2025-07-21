@@ -382,3 +382,24 @@ def make_confetti_tasks(
     ))
 
     return prep_task, gate_task
+
+
+def merge_gate_tasks(*prep_tasks: OpTask, task_id: str = "merged_confetti_gate") -> OpTask:
+    """Return a ``ShortCircuitOperator`` gating task for multiple Confetti jobs.
+
+    The returned :class:`OpTask` evaluates the ``skip_job`` XCom value produced
+    by each ``prep_task`` (as returned by :func:`make_confetti_tasks`) and
+    returns ``True`` when **any** job should run.  This allows grouping several
+    jobs on a single cluster and skipping cluster startup only when every job is
+    skipped.
+    """
+
+    def _should_run(**context: Any) -> bool:
+        ti = context["ti"]
+        return not all(
+            ti.xcom_pull(task_ids=p.task_id, key="skip_job") for p in prep_tasks
+        )
+
+    return OpTask(
+        op=ShortCircuitOperator(task_id=task_id, python_callable=_should_run)
+    )
