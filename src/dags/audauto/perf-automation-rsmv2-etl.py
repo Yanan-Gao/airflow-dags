@@ -1,13 +1,15 @@
 import copy
 from datetime import timedelta, datetime
 
-from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.python import BranchPythonOperator
 
 from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
+from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
@@ -26,7 +28,8 @@ spark_options_list = [("executor-memory", "204G"), ("executor-cores", "32"),
                       ("conf", "spark.driver.cores=15"), ("conf", "spark.sql.shuffle.partitions=4096"),
                       ("conf", "spark.default.parallelism=4096"), ("conf", "spark.driver.maxResultSize=50G"),
                       ("conf", "spark.dynamicAllocation.enabled=true"), ("conf", "spark.memory.fraction=0.7"),
-                      ("conf", "spark.memory.storageFraction=0.25")]
+                      ("conf", "spark.memory.storageFraction=0.25"),
+                      ("conf", "spark.sql.parquet.int96RebaseModeInRead=CORRECTED")]
 
 application_configuration = [{
     "Classification": "emrfs-site",
@@ -42,19 +45,22 @@ run_date = "{{ data_interval_start.to_date_string() }}"
 PROD_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
 TEST_JAR = "s3://thetradedesk-mlplatform-us-east-1/libs/audience/jars/prod/audience.jar"
 
-experiment = ""
+experiment = "yanan-demo"
 experiment_suffix = f"/experiment={experiment}" if experiment else ""
 
 AUDIENCE_JAR = PROD_JAR if TtdEnvFactory.get_from_system() == TtdEnvFactory.prod else TEST_JAR
 
 # if you change start_date, you need to take care circle_days_for_full_training in _decide_full_or_increment
-start_date = datetime(2025, 5, 25, 2, 0)
+start_date = datetime(2025, 7, 1, 2, 0)
 circle_days_for_full_training = 100000
 emr_release_label = AwsEmrVersions.AWS_EMR_SPARK_3_3_2
 env = TtdEnvFactory.get_from_system().execution_env
 override_env = f"test{experiment_suffix}" if env == "prodTest" else env  # only apply experiment suffix in prodTest
 policy_table_read_env = "prod"
 feature_store_read_env = "prod"
+
+environment = TtdEnvFactory.get_from_system()
+confetti_env = resolve_env(env, experiment)
 
 rsmv2_etl_dag = TtdDag(
     dag_id="perf-automation-rsmv2-etl",
@@ -190,6 +196,23 @@ rsmv2_etl_inc_cluster_task = EmrClusterTask(
     retries=0
 )
 
+# Prepare Confetti runtime config once per cluster
+prep_confetti_full, gate_confetti_full = make_confetti_tasks(
+    group_name="audience",
+    job_name="RelevanceModelInputGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+    task_id_prefix="full_",
+)
+
+prep_confetti_inc, gate_confetti_inc = make_confetti_tasks(
+    group_name="audience",
+    job_name="RelevanceModelInputGeneratorJob",
+    experiment_name=experiment,
+    run_date=run_date,
+    task_id_prefix="inc_",
+)
+
 ###############################################################################
 # steps
 ###############################################################################
@@ -211,25 +234,42 @@ def create_rsm_threshold_task(prefix):
     return rsm_thresholds_generation_step
 
 
-def create_rsm_job_task(name, eldorado_config_specific_list) -> EmrJobTask:
+def create_rsm_job_task(name, eldorado_config_specific_list, prep_task):
     # common config
     eldorado_config_list = [('date', run_date), ('optInSeedType', 'Dynamic'),
                             ('AudienceModelPolicyReadableDatasetReadEnv', policy_table_read_env),
                             ('AggregatedSeedReadableDatasetReadEnv', policy_table_read_env),
                             ('FeatureStoreReadEnv', feature_store_read_env), ('posNegRatio', '50'), ("ttdWriteEnv", override_env)]
     eldorado_config_list.extend(eldorado_config_specific_list)
-    return EmrJobTask(
+
+    job_task = EmrJobTask(
         name=name,
         class_name="com.thetradedesk.audience.jobs.modelinput.rsmv2.RelevanceModelInputGeneratorJob",
         additional_args_option_pairs_list=(
-            copy.deepcopy(spark_options_list) +
-            [("jars", "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar")]
+            copy.deepcopy(spark_options_list) + [(
+                "jars",
+                "s3://thetradedesk-mlplatform-us-east-1/libs/common/spark_tfrecord_2_12_0_3_4-56ef7.jar",
+            )]
         ),
-        eldorado_config_option_pairs_list=eldorado_config_list,
+        eldorado_config_option_pairs_list=(
+            eldorado_config_list + [
+                ("confettiEnv", confetti_env),
+                ("experimentName", experiment),
+                (
+                    "confettiRuntimeConfigBasePath",
+                    get_xcom_pull_jinja_string(
+                        task_ids=prep_task.task_id,
+                        key="confetti_runtime_config_base_path",
+                    ),
+                ),
+            ]
+        ),
         action_on_failure="CONTINUE",
-        executable_path=AUDIENCE_JAR,
-        timeout_timedelta=timedelta(hours=8)
+        executable_path=get_xcom_pull_jinja_string(task_ids=prep_task.task_id, key="audienceJarPath"),
+        timeout_timedelta=timedelta(hours=8),
     )
+
+    return job_task
 
 
 featureReadPathPrefix = "profiles/source=bidsimpression/index=TDID/job=DailyTDIDDensityScoreSplitJobSub"
@@ -300,12 +340,14 @@ rsm_inc_tasks_config = [
 ]
 
 for cfg in rsm_full_tasks_config:
-    rsmv2_etl_full_cluster_task.add_parallel_body_task(create_rsm_job_task(cfg["name"], cfg["config"]))
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_full)
+    rsmv2_etl_full_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_full_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Full"))
 
 for cfg in rsm_inc_tasks_config:
-    rsmv2_etl_inc_cluster_task.add_parallel_body_task(create_rsm_job_task(cfg["name"], cfg["config"]))
+    job = create_rsm_job_task(cfg["name"], cfg["config"], prep_confetti_inc)
+    rsmv2_etl_inc_cluster_task.add_parallel_body_task(job)
 
 # rsmv2_etl_inc_cluster_task.add_parallel_body_task(create_rsm_threshold_task("Incremental"))
 
@@ -346,33 +388,22 @@ def _decide_full_or_increment(**context):
     remainder = diff_days % circle_days_for_full_training
 
     if remainder == 0:
-        return "full_tasks"
+        print("run full")
+        return "full_prepare_confetti_RelevanceModelInputGeneratorJob"
     else:
-        return "inc_tasks"
+        print("run incremental")
+        return "inc_prepare_confetti_RelevanceModelInputGeneratorJob"
 
 
 decide_full_or_increment = OpTask(
     op=BranchPythonOperator(task_id="decide_full_or_increment", python_callable=_decide_full_or_increment, provide_context=True)
 )
 
-
-def _run_full(**context):
-    print("run full")
-
-
-def _run_inc(**context):
-    print("run inc")
-
-
-full_tasks = OpTask(op=PythonOperator(task_id='full_tasks', python_callable=_run_full))
-
-inc_tasks = OpTask(op=PythonOperator(task_id='inc_tasks', python_callable=_run_inc))
-
 # Final status check to ensure that all tasks have completed successfully
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=adag))
 
 # Flow
 rsmv2_etl_dag >> dataset_sensor >> decide_full_or_increment
-decide_full_or_increment >> full_tasks >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
-decide_full_or_increment >> inc_tasks >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
+decide_full_or_increment >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
 write_etl_success_file_task >> final_dag_status_step
