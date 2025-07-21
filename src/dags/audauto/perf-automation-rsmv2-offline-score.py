@@ -82,23 +82,23 @@ rsm_etl_dag = TtdDag(
     tags=["AUDAUTO", "RSM", "RSMV2"]
 )
 
-experiment = ""
+experiment = "yanan-demo"
 experiment_path = f"/{experiment}" if experiment else ""
 
 adag = rsm_etl_dag.airflow_dag
 
 # since S3PysparkEmrTask does not work with a .json file, so as a workaround, we copy and rename it to features_json
-feature_path_origin = f"s3://thetradedesk-mlplatform-us-east-1/configdata/{override_env}/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features.json"
-feature_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/{override_env}/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features_json"
+feature_path_origin = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features.json"
+feature_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features_json"
 data_path = f"s3://thetradedesk-mlplatform-us-east-1/data/{imp_read_env}/audience/RSMV2/Imp_Seed_None/v=1/{{{{ ds_nodash }}}}000000/"
-model_path = f"s3://thetradedesk-mlplatform-us-east-1/models/{override_env}/RSMV2{experiment_path}/bidrequest_model/{{{{ ds_nodash }}}}000000/"
+model_path = f"s3://thetradedesk-mlplatform-us-east-1/models/prod/bidrequest_model/{{{{ ds_nodash }}}}000000/"
 output_path = f"s3://thetradedesk-mlplatform-us-east-1/data/{override_env}/audience/RSMV2/emb/raw/v=1/date={{{{ ds_nodash }}}}"
-seed_emb_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/{override_env}/audience/embedding/RSMV2{experiment_path}/v=1/{{{{ ds_nodash }}}}000000/"
+seed_emb_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/embedding/RSMV2/v=1/{{{{ ds_nodash }}}}000000/"
 
 geronimo_etl_dataset = utils.get_geronimo_etl_dataset()
 feature_dataset = DateGeneratedDataset(
     bucket="thetradedesk-mlplatform-us-east-1",
-    path_prefix=f"configdata/{override_env}",
+    path_prefix=f"configdata/prod",
     env_aware=False,
     data_name="audience/schema/RSMV2/v=1",
     version=None,
@@ -129,9 +129,9 @@ dataset_sensor = OpTask(
 
 model_dataset = DateGeneratedDataset(
     bucket="thetradedesk-mlplatform-us-east-1",
-    path_prefix=f"models/{override_env}",
+    path_prefix=f"models/prod",
     env_aware=False,
-    data_name=f"RSMV2{experiment_path}/bidrequest_model",
+    data_name=f"RSMV2/bidrequest_model",
     version=None,
     date_format="%Y%m%d000000"
 )
