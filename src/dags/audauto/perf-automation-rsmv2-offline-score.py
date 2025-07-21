@@ -28,6 +28,7 @@ ebs_root_volume_size = 64
 
 environment = TtdEnvFactory.get_from_system()
 env = environment.execution_env
+experiment = "yanan-demo"
 run_date = "{{ ds }}"
 confetti_env = resolve_env(env, experiment)
 
@@ -87,23 +88,22 @@ rsm_etl_dag = TtdDag(
     tags=["AUDAUTO", "RSM", "RSMV2"]
 )
 
-experiment = "yanan-demo"
 experiment_path = f"/{experiment}" if experiment else ""
 
 adag = rsm_etl_dag.airflow_dag
 
 # since S3PysparkEmrTask does not work with a .json file, so as a workaround, we copy and rename it to features_json
-feature_path_origin = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features.json"
-feature_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{{{ ds_nodash }}}}000000/features_json"
+feature_path_origin = "s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{ ds_nodash }}000000/features.json"
+feature_path = "s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/schema/RSMV2/v=1/{{ ds_nodash }}000000/features_json"
 data_path = f"s3://thetradedesk-mlplatform-us-east-1/data/{imp_read_env}/audience/RSMV2/Imp_Seed_None/v=1/{{{{ ds_nodash }}}}000000/"
-model_path = f"s3://thetradedesk-mlplatform-us-east-1/models/prod/bidrequest_model/{{{{ ds_nodash }}}}000000/"
-output_path = f"s3://thetradedesk-mlplatform-us-east-1/data/{override_env}/audience/RSMV2/emb/raw/v=1/date={{{{ ds_nodash }}}}"
-seed_emb_path = f"s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/embedding/RSMV2/v=1/{{{{ ds_nodash }}}}000000/"
+model_path = "s3://thetradedesk-mlplatform-us-east-1/models/prod/bidrequest_model/{{ ds_nodash }}000000/"
+output_path = f"s3://thetradedesk-mlplatform-us-east-1/data/{override_env}/audience/RSMV2/emb/raw/v=1/date={{ ds_nodash }}"
+seed_emb_path = "s3://thetradedesk-mlplatform-us-east-1/configdata/prod/audience/embedding/RSMV2/v=1/{{ ds_nodash }}000000/"
 
 geronimo_etl_dataset = utils.get_geronimo_etl_dataset()
 feature_dataset = DateGeneratedDataset(
     bucket="thetradedesk-mlplatform-us-east-1",
-    path_prefix=f"configdata/prod",
+    path_prefix="configdata/prod",
     env_aware=False,
     data_name="audience/schema/RSMV2/v=1",
     version=None,
@@ -134,9 +134,9 @@ dataset_sensor = OpTask(
 
 model_dataset = DateGeneratedDataset(
     bucket="thetradedesk-mlplatform-us-east-1",
-    path_prefix=f"models/prod",
+    path_prefix="models/prod",
     env_aware=False,
-    data_name=f"RSMV2/bidrequest_model",
+    data_name="RSMV2/bidrequest_model",
     version=None,
     date_format="%Y%m%d000000"
 )
@@ -250,15 +250,9 @@ clean_up_raw_embedding = OpTask(
 emr_cluster_part2 = utils.create_emr_cluster(
     name="AUDAUTO-Audience-RSMV2-Relevance-Offline-part2", capacity=emr_capacity, bootstrap_script_actions=bootstrap_script_actions
 )
-prep_confetti_dot_product, gate_confetti_dot_product = make_confetti_tasks(
+prep_confetti_part2, gate_confetti_part2 = make_confetti_tasks(
     group_name="audience",
-    job_name="TdidEmbeddingDotProductGeneratorOOS",
-    experiment_name=experiment,
-    run_date=run_date,
-)
-prep_confetti_scale, gate_confetti_scale = make_confetti_tasks(
-    group_name="audience",
-    job_name="TdidSeedScoreScale",
+    job_name="RelevanceModelOfflineScoringPart2",
     experiment_name=experiment,
     run_date=run_date,
 )
@@ -280,12 +274,30 @@ emb_aggregation = utils.create_emr_spark_job(
     "Embedding_Aggregation", "com.thetradedesk.audience.jobs.TdidEmbeddingAggregate", AUDIENCE_JAR, spark_options_list, job_setting_list,
     emr_cluster_part2
 )
+emb_aggregation.eldorado_config_option_pairs_list.extend([
+    ("confettiEnv", confetti_env),
+    ("experimentName", experiment),
+    (
+        "confettiRuntimeConfigBasePath",
+        get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="confetti_runtime_config_base_path"),
+    ),
+])
+emb_aggregation.executable_path = get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="audienceJarPath")
 
 # Step 6: upload aggregated TTD level embeddings to coldstorage bucket so they would be picked by the process that send them.
 emb_to_coldstorage = utils.create_emr_spark_job(
     "UploadEmbeddings", "com.thetradedesk.audience.jobs.UploadEmbeddings", AUDIENCE_JAR, spark_options_list, job_setting_list,
     emr_cluster_part2
 )
+emb_to_coldstorage.eldorado_config_option_pairs_list.extend([
+    ("confettiEnv", confetti_env),
+    ("experimentName", experiment),
+    (
+        "confettiRuntimeConfigBasePath",
+        get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="confetti_runtime_config_base_path"),
+    ),
+])
+emb_to_coldstorage.executable_path = get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="audienceJarPath")
 
 # Step 7: dot product
 emb_dot_product = EmrJobTask(
@@ -299,10 +311,10 @@ emb_dot_product = EmrJobTask(
         ("experimentName", experiment),
         (
             "confettiRuntimeConfigBasePath",
-            get_xcom_pull_jinja_string(task_ids=prep_confetti_dot_product.task_id, key="confetti_runtime_config_base_path"),
+            get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="confetti_runtime_config_base_path"),
         ),
     ],
-    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_dot_product.task_id, key="audienceJarPath"),
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="audienceJarPath"),
     timeout_timedelta=timedelta(hours=3),
 )
 emr_cluster_part2.add_parallel_body_task(emb_dot_product)
@@ -311,17 +323,18 @@ emr_cluster_part2.add_parallel_body_task(emb_dot_product)
 score_min_max_scale_population = EmrJobTask(
     name="Score_Min_Max_Scale_Population_Score",
     class_name="com.thetradedesk.audience.jobs.TdidSeedScoreScale",
-    additional_args_option_pairs_list=spark_options_list + [("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")],
+    additional_args_option_pairs_list=spark_options_list +
+    [("conf", "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs=false")],
     eldorado_config_option_pairs_list=job_setting_list + [
         ("sampling_rate", sampling_rate),
         ("confettiEnv", confetti_env),
         ("experimentName", experiment),
         (
             "confettiRuntimeConfigBasePath",
-            get_xcom_pull_jinja_string(task_ids=prep_confetti_scale.task_id, key="confetti_runtime_config_base_path"),
+            get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="confetti_runtime_config_base_path"),
         ),
     ],
-    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_scale.task_id, key="audienceJarPath"),
+    executable_path=get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="audienceJarPath"),
     timeout_timedelta=timedelta(hours=3),
 )
 emr_cluster_part2.add_parallel_body_task(score_min_max_scale_population)
@@ -331,13 +344,24 @@ data_quality_check = utils.create_emr_spark_job(
     "data_quality_check", "com.thetradedesk.audience.jobs.TdidSeedScoreQualityCheck", AUDIENCE_JAR, spark_options_list, job_setting_list,
     emr_cluster_part2
 )
+data_quality_check.eldorado_config_option_pairs_list.extend([
+    ("confettiEnv", confetti_env),
+    ("experimentName", experiment),
+    (
+        "confettiRuntimeConfigBasePath",
+        get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="confetti_runtime_config_base_path"),
+    ),
+])
+data_quality_check.executable_path = get_xcom_pull_jinja_string(task_ids=prep_confetti_part2.task_id, key="audienceJarPath")
 
 rsm_etl_dag >> dataset_sensor >> prep_confetti_imp2br >> gate_confetti_imp2br >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> emr_cluster_part2
 gate_confetti_imp2br >> gen_model_input
-clean_up_raw_embedding >> prep_confetti_dot_product
-clean_up_raw_embedding >> prep_confetti_scale
-prep_confetti_dot_product >> gate_confetti_dot_product >> emb_dot_product
-prep_confetti_scale >> gate_confetti_scale >> score_min_max_scale_population
+clean_up_raw_embedding >> prep_confetti_part2
+prep_confetti_part2 >> gate_confetti_part2
+gate_confetti_part2 >> emb_dot_product
+gate_confetti_part2 >> score_min_max_scale_population
+gate_confetti_part2 >> emb_aggregation
+gate_confetti_part2 >> emb_to_coldstorage
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
