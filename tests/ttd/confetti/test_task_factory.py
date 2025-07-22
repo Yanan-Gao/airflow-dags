@@ -309,6 +309,26 @@ class FactoryTest(unittest.TestCase):
         self.assertFalse(str(out_call.kwargs.get("key")).startswith("s3://"))
         self.assertTrue(any(str(k).endswith("_START") for k in keys))
 
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
+    def test_wait_timeout_fails(self, mock_inject, mock_get_env, mock_storage):
+        mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
+        instance = mock_storage.return_value
+
+        instance._parse_bucket_and_key.side_effect = lambda k, b=None: ("b", k)
+        instance.list_keys.return_value = []
+        instance.read_key.return_value = "audienceJarBranch: master\naudienceJarVersion: 1"
+
+        def _check(key, bucket_name=None):
+            return str(key).endswith("_START")
+
+        instance.check_for_key.side_effect = _check
+        mock_inject.return_value = "audienceJarPath: bar"
+
+        with self.assertRaises(TimeoutError):
+            _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
+
 
 class AudienceJarPathTest(unittest.TestCase):
 

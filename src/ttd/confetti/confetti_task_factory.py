@@ -213,7 +213,9 @@ def _wait_for_start_and_success(
             success_key,
         )
         time.sleep(300)
-    return False
+    raise TimeoutError(
+        f"Timed out waiting for Confetti job success key {success_key}"
+    )
 
 
 def _wait_for_existing_run(aws: AwsCloudStorage, success_key: str, start_key: str, timeout: timedelta) -> bool:
@@ -229,7 +231,9 @@ def _upload_additional_configs(
     run_vars: dict[str, Any],
 ) -> None:
     for key in aws.list_keys(prefix=tpl_dir, bucket_name=_CONFIG_BUCKET) or []:
-        if key.endswith("behavioral_config.yml") or not key.endswith((".yml", ".yaml")):
+        if key.endswith("behavioral_config.yml") or not key.endswith(
+                (".yml", ".yaml")
+        ):
             continue
         tpl = aws.read_key(key, bucket_name=_CONFIG_BUCKET)
         content = _render_template(tpl, run_vars)
