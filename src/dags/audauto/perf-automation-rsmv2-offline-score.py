@@ -223,7 +223,6 @@ gen_model_input = utils.create_emr_spark_job(
     emr_cluster_part1,
 )
 
-prep_imp2br >> gate_imp2br >> gen_model_input
 
 ########################################################
 # Part 2, wait for model, then proceed
@@ -281,7 +280,6 @@ emb_aggregation = utils.create_emr_spark_job(
     ],
     emr_cluster_part2,
 )
-prep_part2 >> gate_part2 >> emb_aggregation
 
 # Step 6: upload aggregated TTD level embeddings to coldstorage bucket so they would be picked by the process that send them.
 emb_to_coldstorage = utils.create_emr_spark_job(
@@ -300,7 +298,6 @@ emb_to_coldstorage = utils.create_emr_spark_job(
     ],
     emr_cluster_part2,
 )
-prep_part2 >> gate_part2 >> emb_to_coldstorage
 
 # Step 7: dot product
 emb_dot_product = utils.create_emr_spark_job(
@@ -321,7 +318,6 @@ emb_dot_product = utils.create_emr_spark_job(
     ],
     emr_cluster_part2,
 )
-prep_part2 >> gate_part2 >> emb_dot_product
 
 # Step 8: apply min max scaling
 score_min_max_scale_population = utils.create_emr_spark_job(
@@ -341,7 +337,6 @@ score_min_max_scale_population = utils.create_emr_spark_job(
     ],
     emr_cluster_part2,
 )
-prep_part2 >> gate_part2 >> score_min_max_scale_population
 
 # Step 9: check data quality
 data_quality_check = utils.create_emr_spark_job(
@@ -360,7 +355,6 @@ data_quality_check = utils.create_emr_spark_job(
     ],
     emr_cluster_part2,
 )
-prep_part2 >> gate_part2 >> data_quality_check
 
 rsm_etl_dag >> dataset_sensor >> prep_imp2br >> gate_imp2br >> emr_cluster_part1 >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> prep_part2 >> gate_part2 >> emr_cluster_part2
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
