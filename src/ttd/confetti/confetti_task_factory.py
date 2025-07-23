@@ -297,9 +297,17 @@ def _copy_s3_prefix(aws: AwsCloudStorage, src: str, dst: str) -> None:
             dst_bucket_name=dst_bucket,
         ).get()
     else:
-        src_uri = f"s3://{src_bucket}/{src_prefix.rstrip('/')}"
-        dst_uri = f"s3://{dst_bucket}/{dst_prefix.rstrip('/')}"
-        subprocess.check_call(["aws", "s3", "sync", src_uri, dst_uri])
+        dst_prefix = dst_prefix.rstrip("/")
+        src_prefix_no_slash = src_prefix.rstrip("/")
+        for key in keys:
+            rel = key[len(src_prefix_no_slash) + 1:] if key.startswith(src_prefix_no_slash + "/") else key[len(src_prefix_no_slash):]
+            target_key = f"{dst_prefix}/{rel}" if rel else dst_prefix
+            aws.copy_file(
+                src_key=key,
+                src_bucket_name=src_bucket,
+                dst_key=target_key,
+                dst_bucket_name=dst_bucket,
+            ).get()
 
 
 def _archive_runtime_path(aws: AwsCloudStorage, runtime_base: str) -> None:
