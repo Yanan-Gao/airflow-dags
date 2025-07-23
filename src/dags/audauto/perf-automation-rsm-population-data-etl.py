@@ -5,7 +5,11 @@ from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_failure_cleanup_task,
+)
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
@@ -188,6 +192,11 @@ audience_rsm_population_data_generation_step = EmrJobTask(
 
 prep_population_data >> gate_population_data >> audience_rsm_population_data_generation_step
 
+cleanup_runtime_task = make_confetti_failure_cleanup_task(
+    job_name="PopulationInputDataGeneratorJob",
+    prep_task=prep_population_data,
+)
+
 write_population_success_file_task = OpTask(
     op=WriteDateToS3FileOperator(
         task_id="write_population_success_file_task",
@@ -203,6 +212,8 @@ write_population_success_file_task = OpTask(
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_population_data_etl_cluster_task.add_parallel_body_task(audience_rsm_population_data_generation_step)
+
+audience_population_data_etl_cluster_task >> cleanup_runtime_task >> final_dag_status_step
 
 (
     population_data_etl_dag >> dataset_sensor >> density_dataset_sensor >> prep_population_data >> gate_population_data >> audience_population_data_etl_cluster_task >>

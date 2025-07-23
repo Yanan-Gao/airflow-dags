@@ -8,7 +8,11 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_failure_cleanup_task,
+)
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
@@ -379,6 +383,18 @@ write_etl_success_file_task = OpTask(
     )
 )
 
+cleanup_runtime_full = make_confetti_failure_cleanup_task(
+    job_name="RelevanceModelInputGeneratorJob",
+    prep_task=prep_confetti_full,
+    task_id_prefix="full_",
+)
+
+cleanup_runtime_inc = make_confetti_failure_cleanup_task(
+    job_name="RelevanceModelInputGeneratorJob",
+    prep_task=prep_confetti_inc,
+    task_id_prefix="inc_",
+)
+
 
 def _decide_full_or_increment(**context):
     execution_date = context["data_interval_start"]
@@ -406,4 +422,6 @@ final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=adag))
 rsmv2_etl_dag >> dataset_sensor >> decide_full_or_increment
 decide_full_or_increment >> prep_confetti_full >> gate_confetti_full >> rsmv2_etl_concurrent_full_cluster_task >> write_etl_success_file_task
 decide_full_or_increment >> prep_confetti_inc >> gate_confetti_inc >> rsmv2_etl_concurrent_inc_cluster_task >> write_etl_success_file_task
+rsmv2_etl_concurrent_full_cluster_task >> cleanup_runtime_full >> final_dag_status_step
+rsmv2_etl_concurrent_inc_cluster_task >> cleanup_runtime_inc >> final_dag_status_step
 write_etl_success_file_task >> final_dag_status_step
