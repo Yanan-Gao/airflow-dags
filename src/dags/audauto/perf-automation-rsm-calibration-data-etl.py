@@ -5,7 +5,11 @@ from ttd.aws.emr.aws_emr_versions import AwsEmrVersions
 from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_failure_cleanup_task,
+)
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
 from ttd.eldorado.fleet_instance_types import EmrFleetInstanceTypes
@@ -145,6 +149,11 @@ audience_rsm_calibration_data_generation_step = EmrJobTask(
     timeout_timedelta=timedelta(hours=4),
 )
 
+cleanup_runtime_task = make_confetti_failure_cleanup_task(
+    job_name="CalibrationInputDataGeneratorJob",
+    prep_task=prep_task,
+)
+
 
 write_etl_success_file_task = OpTask(
     op=WriteDateToS3FileOperator(
@@ -161,4 +170,6 @@ write_etl_success_file_task = OpTask(
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_calibration_data_etl_cluster_task.add_parallel_body_task(audience_rsm_calibration_data_generation_step)
-calibration_data_etl_dag >> dataset_sensor >> prep_task >> gate_task >> audience_calibration_data_etl_cluster_task >> write_etl_success_file_task >> final_dag_status_step
+calibration_data_etl_dag >> dataset_sensor >> prep_task >> gate_task >> audience_calibration_data_etl_cluster_task
+audience_calibration_data_etl_cluster_task >> write_etl_success_file_task >> final_dag_status_step
+audience_calibration_data_etl_cluster_task >> cleanup_runtime_task >> final_dag_status_step
