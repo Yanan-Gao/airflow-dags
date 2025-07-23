@@ -223,7 +223,9 @@ from ttd.confetti.confetti_task_factory import (  # noqa: E402
     _prepare_runtime_config,
     _copy_s3_prefix,
     make_confetti_tasks,
+    make_confetti_failure_cleanup_task,
 )
+from ttd.tasks.op import OpTask
 
 
 class ResolveEnvTest(unittest.TestCase):
@@ -497,3 +499,20 @@ class FastPassCopyTest(unittest.TestCase):
 
         mock_call.assert_called_with(["aws", "s3", "sync", "s3://b/p", "s3://b/q"])
         aws.copy_file.assert_not_called()
+
+
+class CleanupTaskTest(unittest.TestCase):
+
+    @patch("ttd.confetti.confetti_task_factory._archive_runtime_path")
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    def test_cleanup_archives(self, mock_storage, mock_archive):
+        prep = OpTask(op=_DummyOp(task_id="prep"))
+        cleanup = make_confetti_failure_cleanup_task(
+            job_name="j", prep_task=prep, task_id_prefix="p_"
+        )
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = "s3://b/run/"
+
+        cleanup.first_airflow_op().python_callable(ti=ti)
+        mock_archive.assert_called()
