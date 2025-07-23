@@ -16,7 +16,11 @@ from ttd.docker import DockerEmrClusterTask, DockerCommandBuilder, DockerRunEmrT
 from ttd.ec2.emr_instance_types.graphics_optimized.g5 import G5
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_failure_cleanup_task,
+)
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
@@ -726,6 +730,11 @@ prep_embedding_merge >> gate_embedding_merge >> audience_embedding_merge_step
 audience_embedding_merge_cluster_task.add_parallel_body_task(audience_embedding_merge_step)
 # audience_embedding_merge_cluster_task.add_parallel_body_task(audience_audience_embedding_merge_step)
 
+cleanup_runtime_task = make_confetti_failure_cleanup_task(
+    job_name="AudienceCalibrationAndMergeJob",
+    prep_task=prep_embedding_merge,
+)
+
 delay_task = OpTask(op=PythonOperator(task_id="delay_task", python_callable=lambda: time.sleep(1800), dag=adag))
 
 # promote_model_task = rsm_mlflow_operator.get_register_new_prod_version_operator(
@@ -770,3 +779,4 @@ calibration_data_sensor >> detect_previous_version >> prediction_data_sensor >> 
     update_non_sensitive_tmp_embedding_current_file_task >> init_commit_files >> policy_commit_file_sensor >> promote_model_task >>
     delay_task >> update_br_model_success_file_task >> update_br_model_current_file_task >> final_dag_status_step
 )
+audience_embedding_merge_cluster_task >> cleanup_runtime_task >> final_dag_status_step

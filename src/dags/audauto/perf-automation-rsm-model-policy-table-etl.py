@@ -6,7 +6,11 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.datasets.hour_dataset import HourGeneratedDataset
 from ttd.ec2.emr_instance_types.memory_optimized.r5 import R5
 from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
-from ttd.confetti.confetti_task_factory import make_confetti_tasks, resolve_env
+from ttd.confetti.confetti_task_factory import (
+    make_confetti_tasks,
+    resolve_env,
+    make_confetti_failure_cleanup_task,
+)
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
@@ -179,9 +183,15 @@ audience_rsm_policy_table_generation_step = EmrJobTask(
 
 prep_policy_table >> gate_policy_table >> audience_rsm_policy_table_generation_step
 
+cleanup_runtime_task = make_confetti_failure_cleanup_task(
+    job_name="RSMGraphPolicyTableGeneratorJob",
+    prep_task=prep_policy_table,
+)
+
 # Final status check to ensure that all tasks have completed successfully
 final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_policy_table_etl_cluster_task.add_parallel_body_task(audience_rsm_policy_table_generation_step)
+audience_policy_table_etl_cluster_task >> cleanup_runtime_task >> final_dag_status_step
 
 audience_policy_table_etl_dag >> dataset_sensor >> prep_policy_table >> gate_policy_table >> audience_policy_table_etl_cluster_task >> final_dag_status_step
