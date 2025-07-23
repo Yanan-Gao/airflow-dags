@@ -302,6 +302,52 @@ def _copy_s3_prefix(aws: AwsCloudStorage, src: str, dst: str) -> None:
         subprocess.check_call(["aws", "s3", "sync", src_uri, dst_uri])
 
 
+def _archive_runtime_path(aws: AwsCloudStorage, runtime_base: str) -> None:
+    """Move a runtime config directory to the archive location.
+
+    ``runtime_base`` must be a full S3 URI ending with ``/``. The
+    contents are copied to ``runtime-configs-archive`` with a UTC
+    timestamp and then removed from the original location.
+    """
+
+    bucket, prefix = aws._parse_bucket_and_key(runtime_base, None)
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    archive_prefix = (
+        prefix.replace("runtime-configs/", "runtime-configs-archive/", 1)
+        .rstrip("/")
+        + f"/{timestamp}/"
+    )
+
+    _copy_s3_prefix(
+        aws,
+        f"s3://{bucket}/{prefix}",
+        f"s3://{bucket}/{archive_prefix}",
+    )
+    aws.remove_objects(bucket_name=bucket, prefix=prefix)
+
+
+def make_confetti_failure_cleanup_task(
+    job_name: str, *, prep_task: OpTask, task_id_prefix: str = ""
+) -> OpTask:
+    """Return an ``OpTask`` that archives runtime configs when a job fails."""
+
+    def _archive_on_failure(**context: Any) -> None:
+        ti = context["ti"]
+        runtime_base = ti.xcom_pull(
+            task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"
+        )
+        aws = AwsCloudStorage()
+        _archive_runtime_path(aws, runtime_base)
+
+    return OpTask(
+        op=PythonOperator(
+            task_id=f"{task_id_prefix}archive_confetti_{job_name}",
+            python_callable=_archive_on_failure,
+            trigger_rule="one_failed",
+        )
+    )
+
+
 def _prepare_runtime_config(
         group: str,
         job: str,
@@ -321,7 +367,9 @@ def _prepare_runtime_config(
     exec_cfg = _load_execution_config(aws, tpl_dir, run_vars)
     hash_ = _sha256_b64(rendered)
 
-    runtime_base, cfg_key, success_key, start_key = _runtime_paths(env, group, job, hash_, experiment)
+    runtime_base, cfg_key, success_key, start_key = _runtime_paths(
+        env, group, job, hash_, experiment
+    )
 
     runtime_base_key = cfg_key.rsplit("/", 1)[0] + "/"
 
