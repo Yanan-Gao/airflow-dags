@@ -329,6 +329,34 @@ class FactoryTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
 
+    @patch("ttd.confetti.confetti_task_factory._wait_for_existing_run")
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
+    def test_force_run_skips_wait(
+        self, mock_inject, mock_get_env, mock_storage, mock_wait
+    ):
+        mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
+        instance = mock_storage.return_value
+        instance._parse_bucket_and_key.side_effect = lambda k, b=None: ("b", k)
+        instance.list_keys.return_value = []
+
+        def _read(key, bucket_name=None):
+            if str(key).endswith("execution_config.yml"):
+                return "forceRun: true"
+            return "audienceJarBranch: master\naudienceJarVersion: 1"
+
+        instance.read_key.side_effect = _read
+        mock_wait.return_value = True
+        mock_inject.return_value = "audienceJarPath: bar"
+
+        _, skip, _ = _prepare_runtime_config(
+            "g", "j", "2020-01-01", "", timedelta(seconds=0), return_jar_path=True
+        )
+
+        self.assertFalse(skip)
+        mock_wait.assert_not_called()
+
 
 class AudienceJarPathTest(unittest.TestCase):
 
