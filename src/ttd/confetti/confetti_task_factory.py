@@ -242,6 +242,32 @@ def _upload_additional_configs(
         aws.load_string(content, key=dest_key, bucket_name=_CONFIG_BUCKET, replace=True)
 
 
+def _load_execution_config(
+    aws: AwsCloudStorage,
+    tpl_dir: str,
+    run_vars: dict[str, Any],
+) -> dict[str, Any]:
+    """Load optional execution configuration for a Confetti job."""
+
+    exec_key = tpl_dir + "execution_config.yml"
+    try:
+        tpl = aws.read_key(exec_key, bucket_name=_CONFIG_BUCKET)
+    except Exception:
+        return {}
+
+    rendered = _render_template(tpl, run_vars)
+    try:
+        data = yaml.safe_load(rendered) or {}
+    except Exception as exc:  # pragma: no cover - malformed YAML
+        raise ValueError(f"Failed to parse execution config: {exc}") from exc
+
+    if not isinstance(data, dict):  # pragma: no cover - unexpected structure
+        logger.warning("execution_config.yml is not a mapping, ignoring")
+        return {}
+
+    return data
+
+
 def _copy_s3_prefix(aws: AwsCloudStorage, src: str, dst: str) -> None:
     """Recursively copy S3 objects.
 
@@ -292,13 +318,16 @@ def _prepare_runtime_config(
     aws = AwsCloudStorage()
     run_vars = _collect_job_run_level_variables(run_date=run_date)
     rendered, jar_path = _render_identity_config(aws, tpl_key, run_vars)
+    exec_cfg = _load_execution_config(aws, tpl_dir, run_vars)
     hash_ = _sha256_b64(rendered)
 
     runtime_base, cfg_key, success_key, start_key = _runtime_paths(env, group, job, hash_, experiment)
 
     runtime_base_key = cfg_key.rsplit("/", 1)[0] + "/"
 
-    if _wait_for_existing_run(aws, success_key, start_key, timeout):
+    force_run = bool(exec_cfg.get("forceRun"))
+
+    if not force_run and _wait_for_existing_run(aws, success_key, start_key, timeout):
         return (runtime_base, True, jar_path) if return_jar_path else (runtime_base, True)
 
     aws.load_string(rendered, key=cfg_key, bucket_name=_CONFIG_BUCKET, replace=True)
