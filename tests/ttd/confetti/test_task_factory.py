@@ -1,7 +1,7 @@
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 from datetime import timedelta
 import yaml
 
@@ -412,10 +412,9 @@ class FastPassCopyTest(unittest.TestCase):
             return bucket, key_path
         return b or "b", k
 
-    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
-    def test_should_run_copies_output_on_fast_pass(self, mock_get_env, mock_storage, mock_call):
+    def test_should_run_copies_output_on_fast_pass(self, mock_get_env, mock_storage):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         instance = mock_storage.return_value
         instance._parse_bucket_and_key.side_effect = self._parse
@@ -437,13 +436,11 @@ class FastPassCopyTest(unittest.TestCase):
         }[key]
         should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
         self.assertFalse(should_run)
-        mock_call.assert_called()
-        instance.copy_file.assert_not_called()
+        instance.copy_file.assert_called()
 
-    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
-    def test_should_run_no_copy_when_same_path(self, mock_get_env, mock_storage, mock_call):
+    def test_should_run_no_copy_when_same_path(self, mock_get_env, mock_storage):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         instance = mock_storage.return_value
         instance._parse_bucket_and_key.side_effect = self._parse
@@ -459,11 +456,9 @@ class FastPassCopyTest(unittest.TestCase):
         }[key]
         should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
         self.assertFalse(should_run)
-        mock_call.assert_not_called()
         instance.copy_file.assert_not_called()
 
-    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
-    def test_copy_handles_single_file(self, mock_call):
+    def test_copy_handles_single_file(self):
         aws = MagicMock()
         aws._parse_bucket_and_key.side_effect = self._parse
         aws.list_keys.return_value = []
@@ -482,10 +477,8 @@ class FastPassCopyTest(unittest.TestCase):
             dst_key="q/file.txt",
             dst_bucket_name="b",
         )
-        mock_call.assert_not_called()
 
-    @patch("ttd.confetti.confetti_task_factory.subprocess.check_call")
-    def test_copy_handles_prefix(self, mock_call):
+    def test_copy_handles_prefix(self):
         aws = MagicMock()
         aws._parse_bucket_and_key.side_effect = self._parse
         aws.list_keys.return_value = ["p/a", "p/b"]
@@ -497,8 +490,20 @@ class FastPassCopyTest(unittest.TestCase):
             "s3://b/q/",
         )
 
-        mock_call.assert_called_with(["aws", "s3", "sync", "s3://b/p", "s3://b/q"])
-        aws.copy_file.assert_not_called()
+        aws.copy_file.assert_has_calls([
+            call(
+                src_key="p/a",
+                src_bucket_name="b",
+                dst_key="q/a",
+                dst_bucket_name="b",
+            ),
+            call(
+                src_key="p/b",
+                src_bucket_name="b",
+                dst_key="q/b",
+                dst_bucket_name="b",
+            ),
+        ], any_order=True)
 
 
 class CleanupTaskTest(unittest.TestCase):
