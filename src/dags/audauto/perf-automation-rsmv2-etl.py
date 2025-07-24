@@ -386,12 +386,14 @@ write_etl_success_file_task = OpTask(
 cleanup_runtime_full = make_confetti_failure_cleanup_task(
     job_name="RelevanceModelInputGeneratorJob",
     prep_task=prep_confetti_full,
+    cluster_id=rsmv2_etl_concurrent_full_cluster_task.cluster_id,
     task_id_prefix="full_",
 )
 
 cleanup_runtime_inc = make_confetti_failure_cleanup_task(
     job_name="RelevanceModelInputGeneratorJob",
     prep_task=prep_confetti_inc,
+    cluster_id=rsmv2_etl_concurrent_inc_cluster_task.cluster_id,
     task_id_prefix="inc_",
 )
 

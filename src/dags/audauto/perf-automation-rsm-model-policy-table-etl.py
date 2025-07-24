@@ -186,6 +186,7 @@ prep_policy_table >> gate_policy_table >> audience_rsm_policy_table_generation_s
 cleanup_runtime_task = make_confetti_failure_cleanup_task(
     job_name="RSMGraphPolicyTableGeneratorJob",
     prep_task=prep_policy_table,
+    cluster_id=audience_policy_table_etl_cluster_task.cluster_id,
 )
 
 # Final status check to ensure that all tasks have completed successfully

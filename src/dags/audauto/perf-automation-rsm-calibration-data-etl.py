@@ -152,6 +152,7 @@ audience_rsm_calibration_data_generation_step = EmrJobTask(
 cleanup_runtime_task = make_confetti_failure_cleanup_task(
     job_name="CalibrationInputDataGeneratorJob",
     prep_task=prep_task,
+    cluster_id=audience_calibration_data_etl_cluster_task.cluster_id,
 )
 
 

@@ -335,23 +335,58 @@ def _archive_runtime_path(aws: AwsCloudStorage, runtime_base: str) -> None:
 
 
 def make_confetti_failure_cleanup_task(
-    job_name: str, *, prep_task: OpTask, task_id_prefix: str = ""
+    job_name: str,
+    *,
+    prep_task: OpTask,
+    cluster_id: str,
+    task_id_prefix: str = "",
 ) -> OpTask:
-    """Return an ``OpTask`` that archives runtime configs when a job fails."""
+    """Return an ``OpTask`` that cleans up runtime configs on failure and
+    writes a ``_SUCCESS`` marker on success."""
 
-    def _archive_on_failure(**context: Any) -> None:
+    def _handle_completion(cluster_id: str, **context: Any) -> None:
+        from airflow.utils.state import State
+
         ti = context["ti"]
         runtime_base = ti.xcom_pull(
             task_ids=prep_task.task_id, key="confetti_runtime_config_base_path"
         )
         aws = AwsCloudStorage()
-        _archive_runtime_path(aws, runtime_base)
+
+        dag_run = context.get("dag_run")
+        task = context.get("task")
+        failed = False
+        if dag_run and task:
+            for tid in task.upstream_task_ids:
+                ti_state = dag_run.get_task_instance(tid).state
+                if ti_state in State.failed_states:
+                    failed = True
+                    break
+
+        if failed:
+            _archive_runtime_path(aws, runtime_base)
+            return
+
+        bucket, prefix = aws._parse_bucket_and_key(runtime_base, None)
+        start_key = prefix.rstrip("/") + "/_START"
+        try:
+            experiment_name = aws.read_key(start_key, bucket_name=bucket).strip()
+        except Exception:
+            experiment_name = ""
+
+        success_key = prefix.rstrip("/") + "/_SUCCESS"
+        content = yaml.safe_dump(
+            {"experimentName": experiment_name, "clusterId": cluster_id},
+            sort_keys=True,
+        )
+        aws.load_string(content, key=success_key, bucket_name=bucket, replace=True)
 
     return OpTask(
         op=PythonOperator(
             task_id=f"{task_id_prefix}archive_confetti_{job_name}",
-            python_callable=_archive_on_failure,
-            trigger_rule="one_failed",
+            python_callable=_handle_completion,
+            op_kwargs={"cluster_id": cluster_id},
+            trigger_rule="all_done",
         )
     )
 

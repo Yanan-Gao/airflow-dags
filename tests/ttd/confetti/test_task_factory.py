@@ -120,6 +120,7 @@ fake_ops_subdag.SubDagOperator = DummySubDagOperator
 fake_utils_task_group.TaskGroup = DummyTaskGroup
 fake_utils_trigger.TriggerRule = type("TriggerRule", (), {})
 fake_utils_state.TaskInstanceState = type("TaskInstanceState", (), {"FAILED": "failed"})
+fake_utils_state.State = type("State", (), {"failed_states": ["failed"]})
 fake_security.permissions = types.SimpleNamespace()
 fake_settings.TIMEZONE = "UTC"
 
@@ -510,14 +511,40 @@ class CleanupTaskTest(unittest.TestCase):
 
     @patch("ttd.confetti.confetti_task_factory._archive_runtime_path")
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
-    def test_cleanup_archives(self, mock_storage, mock_archive):
+    def test_cleanup_archives_on_failure(self, mock_storage, mock_archive):
         prep = OpTask(op=_DummyOp(task_id="prep"))
         cleanup = make_confetti_failure_cleanup_task(
-            job_name="j", prep_task=prep, task_id_prefix="p_"
+            job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_"
         )
 
         ti = MagicMock()
         ti.xcom_pull.return_value = "s3://b/run/"
+        dag_run = MagicMock()
+        dag_run.get_task_instance.return_value = type("T", (), {"state": "failed"})()
+        task = MagicMock(upstream_task_ids={"x"})
 
-        cleanup.first_airflow_op().python_callable(ti=ti)
-        mock_archive.assert_called()
+        cleanup.first_airflow_op().python_callable(ti=ti, dag_run=dag_run, task=task, cluster_id="cid")
+        mock_archive.assert_called_once()
+        mock_storage.return_value.load_string.assert_not_called()
+
+    @patch("ttd.confetti.confetti_task_factory._archive_runtime_path")
+    @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
+    def test_cleanup_writes_success(self, mock_storage, mock_archive):
+        prep = OpTask(op=_DummyOp(task_id="prep"))
+        cleanup = make_confetti_failure_cleanup_task(
+            job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_"
+        )
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = "s3://b/run/"
+        dag_run = MagicMock()
+        dag_run.get_task_instance.return_value = type("T", (), {"state": "success"})()
+        task = MagicMock(upstream_task_ids={"x"})
+        instance = mock_storage.return_value
+        instance._parse_bucket_and_key.return_value = ("b", "run/")
+        instance.read_key.return_value = "exp"
+
+        cleanup.first_airflow_op().python_callable(ti=ti, dag_run=dag_run, task=task, cluster_id="cid")
+
+        mock_archive.assert_not_called()
+        instance.load_string.assert_called_once()
