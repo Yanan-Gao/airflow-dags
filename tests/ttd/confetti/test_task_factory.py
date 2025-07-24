@@ -224,7 +224,7 @@ from ttd.confetti.confetti_task_factory import (  # noqa: E402
     _prepare_runtime_config,
     _copy_s3_prefix,
     make_confetti_tasks,
-    make_confetti_failure_cleanup_task,
+    make_confetti_post_processing_task,
 )
 from ttd.tasks.op import OpTask
 
@@ -513,7 +513,7 @@ class CleanupTaskTest(unittest.TestCase):
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     def test_cleanup_archives_on_failure(self, mock_storage, mock_archive):
         prep = OpTask(op=_DummyOp(task_id="prep"))
-        cleanup = make_confetti_failure_cleanup_task(
+        cleanup = make_confetti_post_processing_task(
             job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_"
         )
 
@@ -531,7 +531,7 @@ class CleanupTaskTest(unittest.TestCase):
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     def test_cleanup_writes_success(self, mock_storage, mock_archive):
         prep = OpTask(op=_DummyOp(task_id="prep"))
-        cleanup = make_confetti_failure_cleanup_task(
+        cleanup = make_confetti_post_processing_task(
             job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_"
         )
 

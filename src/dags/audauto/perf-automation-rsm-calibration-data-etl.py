@@ -8,7 +8,7 @@ from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
 from ttd.confetti.confetti_task_factory import (
     make_confetti_tasks,
     resolve_env,
-    make_confetti_failure_cleanup_task,
+    make_confetti_post_processing_task,
 )
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
 from ttd.eldorado.base import TtdDag
@@ -149,7 +149,7 @@ audience_rsm_calibration_data_generation_step = EmrJobTask(
     timeout_timedelta=timedelta(hours=4),
 )
 
-cleanup_runtime_task = make_confetti_failure_cleanup_task(
+post_processing_task = make_confetti_post_processing_task(
     job_name="CalibrationInputDataGeneratorJob",
     prep_task=prep_task,
     cluster_id=audience_calibration_data_etl_cluster_task.cluster_id,
@@ -173,4 +173,4 @@ final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 audience_calibration_data_etl_cluster_task.add_parallel_body_task(audience_rsm_calibration_data_generation_step)
 calibration_data_etl_dag >> dataset_sensor >> prep_task >> gate_task >> audience_calibration_data_etl_cluster_task
 audience_calibration_data_etl_cluster_task >> write_etl_success_file_task >> final_dag_status_step
-audience_calibration_data_etl_cluster_task >> cleanup_runtime_task >> final_dag_status_step
+audience_calibration_data_etl_cluster_task >> post_processing_task >> final_dag_status_step

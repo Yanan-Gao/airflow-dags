@@ -12,7 +12,7 @@ from ttd.datasets.date_generated_dataset import DateGeneratedDataset
 from ttd.confetti.confetti_task_factory import (
     make_confetti_tasks,
     resolve_env,
-    make_confetti_failure_cleanup_task,
+    make_confetti_post_processing_task,
 )
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 
@@ -221,7 +221,7 @@ prep_imp2br, gate_imp2br = make_confetti_tasks(
     run_date=run_date,
 )
 
-cleanup_runtime_imp2br = make_confetti_failure_cleanup_task(
+post_processing_imp2br = make_confetti_post_processing_task(
     job_name="Imp2BrModelInferenceDataGenerator",
     prep_task=prep_imp2br,
     cluster_id=emr_cluster_part1.cluster_id,
@@ -266,7 +266,7 @@ prep_part2, gate_part2 = make_confetti_tasks(
     run_date=run_date,
 )
 
-cleanup_runtime_part2 = make_confetti_failure_cleanup_task(
+post_processing_part2 = make_confetti_post_processing_task(
     job_name="RelevanceModelOfflineScoringPart2",
     prep_task=prep_part2,
     cluster_id=emr_cluster_part2.cluster_id,
@@ -381,5 +381,5 @@ rsm_etl_dag >> dataset_sensor >> prep_imp2br >> gate_imp2br >> emr_cluster_part1
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = FinalDagStatusCheckOperator(dag=adag)
 emr_cluster_part2.last_airflow_op() >> final_dag_check
-emr_cluster_part1.last_airflow_op() >> cleanup_runtime_imp2br >> final_dag_check
-emr_cluster_part2.last_airflow_op() >> cleanup_runtime_part2 >> final_dag_check
+emr_cluster_part1.last_airflow_op() >> post_processing_imp2br >> final_dag_check
+emr_cluster_part2.last_airflow_op() >> post_processing_part2 >> final_dag_check

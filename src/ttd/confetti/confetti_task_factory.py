@@ -90,6 +90,8 @@ def _inject_audience_jar_path(rendered: str, aws: AwsCloudStorage) -> str:
 
     data["audienceJarPath"] = jar_path
     return yaml.safe_dump(data, sort_keys=True)
+
+
 #
 #
 # def _inject_run_date(rendered: str, run_date: datetime | date | str | None) -> str:
@@ -175,7 +177,7 @@ def _template_dir(env: str, experiment: str, group: str, job: str) -> str:
 
 
 def _render_identity_config(
-    aws: AwsCloudStorage, tpl_key: str, run_vars: dict[str, Any]
+        aws: AwsCloudStorage, tpl_key: str, run_vars: dict[str, Any]
 ) -> tuple[str, str]:
     template = aws.read_key(tpl_key, bucket_name=_CONFIG_BUCKET)
     rendered = _render_template(template, run_vars)
@@ -199,7 +201,7 @@ def _success_exists(aws: AwsCloudStorage, success_key: str) -> bool:
 
 
 def _wait_for_start_and_success(
-    aws: AwsCloudStorage, start_key: str, success_key: str, timeout: timedelta
+        aws: AwsCloudStorage, start_key: str, success_key: str, timeout: timedelta
 ) -> bool:
     if not aws.check_for_key(start_key, _CONFIG_BUCKET):
         return False
@@ -225,10 +227,10 @@ def _wait_for_existing_run(aws: AwsCloudStorage, success_key: str, start_key: st
 
 
 def _upload_additional_configs(
-    aws: AwsCloudStorage,
-    tpl_dir: str,
-    runtime_base_key: str,
-    run_vars: dict[str, Any],
+        aws: AwsCloudStorage,
+        tpl_dir: str,
+        runtime_base_key: str,
+        run_vars: dict[str, Any],
 ) -> None:
     for key in aws.list_keys(prefix=tpl_dir, bucket_name=_CONFIG_BUCKET) or []:
         if key.endswith("identity_config.yml") or not key.endswith(
@@ -243,9 +245,9 @@ def _upload_additional_configs(
 
 
 def _load_execution_config(
-    aws: AwsCloudStorage,
-    tpl_dir: str,
-    run_vars: dict[str, Any],
+        aws: AwsCloudStorage,
+        tpl_dir: str,
+        run_vars: dict[str, Any],
 ) -> dict[str, Any]:
     """Load optional execution configuration for a Confetti job."""
 
@@ -300,7 +302,8 @@ def _copy_s3_prefix(aws: AwsCloudStorage, src: str, dst: str) -> None:
         dst_prefix = dst_prefix.rstrip("/")
         src_prefix_no_slash = src_prefix.rstrip("/")
         for key in keys:
-            rel = key[len(src_prefix_no_slash) + 1:] if key.startswith(src_prefix_no_slash + "/") else key[len(src_prefix_no_slash):]
+            rel = key[len(src_prefix_no_slash) + 1:] if key.startswith(src_prefix_no_slash + "/") else key[
+                                                                                                       len(src_prefix_no_slash):]
             target_key = f"{dst_prefix}/{rel}" if rel else dst_prefix
             aws.copy_file(
                 src_key=key,
@@ -321,9 +324,9 @@ def _archive_runtime_path(aws: AwsCloudStorage, runtime_base: str) -> None:
     bucket, prefix = aws._parse_bucket_and_key(runtime_base, None)
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     archive_prefix = (
-        prefix.replace("runtime-configs/", "runtime-configs-archive/", 1)
-        .rstrip("/")
-        + f"/{timestamp}/"
+            prefix.replace("runtime-configs/", "runtime-configs-archive/", 1)
+            .rstrip("/")
+            + f"/{timestamp}/"
     )
 
     _copy_s3_prefix(
@@ -333,13 +336,12 @@ def _archive_runtime_path(aws: AwsCloudStorage, runtime_base: str) -> None:
     )
     aws.remove_objects(bucket_name=bucket, prefix=prefix)
 
-
-def make_confetti_failure_cleanup_task(
-    job_name: str,
-    *,
-    prep_task: OpTask,
-    cluster_id: str,
-    task_id_prefix: str = "",
+def make_confetti_post_processing_task(
+        job_name: str,
+        *,
+        prep_task: OpTask,
+        cluster_id: str,
+        task_id_prefix: str = "",
 ) -> OpTask:
     """Return an ``OpTask`` that cleans up runtime configs on failure and
     writes a ``_SUCCESS`` marker on success."""

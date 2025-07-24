@@ -8,7 +8,7 @@ from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
 from ttd.confetti.confetti_task_factory import (
     make_confetti_tasks,
     resolve_env,
-    make_confetti_failure_cleanup_task,
+    make_confetti_post_processing_task,
 )
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
@@ -192,7 +192,7 @@ audience_rsm_population_data_generation_step = EmrJobTask(
 
 prep_population_data >> gate_population_data >> audience_rsm_population_data_generation_step
 
-cleanup_runtime_task = make_confetti_failure_cleanup_task(
+post_processing_task = make_confetti_post_processing_task(
     job_name="PopulationInputDataGeneratorJob",
     prep_task=prep_population_data,
     cluster_id=audience_population_data_etl_cluster_task.cluster_id,
@@ -214,7 +214,7 @@ final_dag_status_step = OpTask(op=FinalDagStatusCheckOperator(dag=dag))
 
 audience_population_data_etl_cluster_task.add_parallel_body_task(audience_rsm_population_data_generation_step)
 
-audience_population_data_etl_cluster_task >> cleanup_runtime_task >> final_dag_status_step
+audience_population_data_etl_cluster_task >> post_processing_task >> final_dag_status_step
 
 (
     population_data_etl_dag >> dataset_sensor >> density_dataset_sensor >> prep_population_data >> gate_population_data >> audience_population_data_etl_cluster_task >>

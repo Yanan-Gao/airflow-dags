@@ -11,7 +11,7 @@ from ttd.eldorado.aws.emr_cluster_task import EmrClusterTask
 from ttd.confetti.confetti_task_factory import (
     make_confetti_tasks,
     resolve_env,
-    make_confetti_failure_cleanup_task,
+    make_confetti_post_processing_task,
 )
 from ttd.eldorado.xcom.helpers import get_xcom_pull_jinja_string
 from ttd.eldorado.aws.emr_job_task import EmrJobTask
@@ -383,14 +383,14 @@ write_etl_success_file_task = OpTask(
     )
 )
 
-cleanup_runtime_full = make_confetti_failure_cleanup_task(
+cleanup_runtime_full = make_confetti_post_processing_task(
     job_name="RelevanceModelInputGeneratorJob",
     prep_task=prep_confetti_full,
     cluster_id=rsmv2_etl_concurrent_full_cluster_task.cluster_id,
     task_id_prefix="full_",
 )
 
-cleanup_runtime_inc = make_confetti_failure_cleanup_task(
+cleanup_runtime_inc = make_confetti_post_processing_task(
     job_name="RelevanceModelInputGeneratorJob",
     prep_task=prep_confetti_inc,
     cluster_id=rsmv2_etl_concurrent_inc_cluster_task.cluster_id,

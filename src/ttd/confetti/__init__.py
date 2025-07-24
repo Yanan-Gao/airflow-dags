@@ -3,6 +3,6 @@ try:  # optional import to avoid heavy airflow dependency in simple contexts
 except Exception:  # pragma: no cover - airflow may not be installed
     AutoConfiguredEmrJobTask = None  # type: ignore
 
-from .confetti_task_factory import make_confetti_tasks, make_confetti_failure_cleanup_task
+from .confetti_task_factory import make_confetti_tasks, make_confetti_post_processing_task
 
-__all__ = ["AutoConfiguredEmrJobTask", "make_confetti_tasks", "make_confetti_failure_cleanup_task"]
+__all__ = ["AutoConfiguredEmrJobTask", "make_confetti_tasks", "make_confetti_post_processing_task"]
