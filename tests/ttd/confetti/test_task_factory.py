@@ -233,13 +233,20 @@ class ResolveEnvTest(unittest.TestCase):
 
     def test_prod_without_experiment(self):
         self.assertEqual(resolve_env("prod", ""), "prod")
+        self.assertEqual(resolve_env("prod", None), "prod")
 
-    def test_prod_with_experiment(self):
-        self.assertEqual(resolve_env("prod", "exp"), "experiment")
+    def test_prod_with_experiment_fails(self):
+        with self.assertRaises(ValueError):
+            resolve_env("prod", "exp")
 
     def test_test_env_requires_experiment(self):
         with self.assertRaises(ValueError):
             resolve_env("test", "")
+        with self.assertRaises(ValueError):
+            resolve_env("test", None)
+
+    def test_test_env_with_experiment(self):
+        self.assertEqual(resolve_env("test", "exp"), "test")
 
 
 class TemplateTest(unittest.TestCase):
@@ -273,6 +280,7 @@ class FactoryTest(unittest.TestCase):
         ctx["ti"].xcom_push.assert_any_call(key="confetti_runtime_config_base_path", value=unittest.mock.ANY)
         ctx["ti"].xcom_push.assert_any_call(key="skip_job", value=False)
         ctx["ti"].xcom_push.assert_any_call(key="audienceJarPath", value=unittest.mock.ANY)
+        ctx["ti"].xcom_push.assert_any_call(key="confetti_experiment_name", value="")
         should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
         self.assertTrue(should_run)
 
@@ -536,13 +544,12 @@ class CleanupTaskTest(unittest.TestCase):
         )
 
         ti = MagicMock()
-        ti.xcom_pull.return_value = "s3://b/run/"
+        ti.xcom_pull.side_effect = ["s3://b/run/", "exp"]
         dag_run = MagicMock()
         dag_run.get_task_instance.return_value = type("T", (), {"state": "success"})()
         task = MagicMock(upstream_task_ids={"x"})
         instance = mock_storage.return_value
         instance._parse_bucket_and_key.return_value = ("b", "run/")
-        instance.read_key.return_value = "exp"
 
         cleanup.first_airflow_op().python_callable(ti=ti, dag_run=dag_run, task=task, cluster_id="cid")
 
