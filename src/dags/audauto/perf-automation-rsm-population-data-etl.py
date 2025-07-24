@@ -195,6 +195,7 @@ prep_population_data >> gate_population_data >> audience_rsm_population_data_gen
 cleanup_runtime_task = make_confetti_failure_cleanup_task(
     job_name="PopulationInputDataGeneratorJob",
     prep_task=prep_population_data,
+    cluster_id=audience_population_data_etl_cluster_task.cluster_id,
 )
 
 write_population_success_file_task = OpTask(

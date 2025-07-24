@@ -733,6 +733,7 @@ audience_embedding_merge_cluster_task.add_parallel_body_task(audience_embedding_
 cleanup_runtime_task = make_confetti_failure_cleanup_task(
     job_name="AudienceCalibrationAndMergeJob",
     prep_task=prep_embedding_merge,
+    cluster_id=audience_embedding_merge_cluster_task.cluster_id,
 )
 
 delay_task = OpTask(op=PythonOperator(task_id="delay_task", python_callable=lambda: time.sleep(1800), dag=adag))

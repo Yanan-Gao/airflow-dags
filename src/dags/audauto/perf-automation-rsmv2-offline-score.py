@@ -224,6 +224,7 @@ prep_imp2br, gate_imp2br = make_confetti_tasks(
 cleanup_runtime_imp2br = make_confetti_failure_cleanup_task(
     job_name="Imp2BrModelInferenceDataGenerator",
     prep_task=prep_imp2br,
+    cluster_id=emr_cluster_part1.cluster_id,
 )
 
 # step 3: generate the model input
@@ -268,6 +269,7 @@ prep_part2, gate_part2 = make_confetti_tasks(
 cleanup_runtime_part2 = make_confetti_failure_cleanup_task(
     job_name="RelevanceModelOfflineScoringPart2",
     prep_task=prep_part2,
+    cluster_id=emr_cluster_part2.cluster_id,
 )
 
 # Step 4: generate the raw bid request level embedding, by model prediction with spark
