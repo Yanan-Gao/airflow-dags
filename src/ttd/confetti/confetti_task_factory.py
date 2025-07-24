@@ -159,19 +159,20 @@ def _collect_job_run_level_variables(
     return run_level_variables
 
 
-def resolve_env(env: str, experiment: str) -> str:
+def resolve_env(env: str, experiment: str | None) -> str:
+    """Return the Confetti environment name for ``env`` and ``experiment``."""
+
     env = (env or "").lower()
     if env in ("prod", "production"):
-        if experiment:
-            return "experiment"
-        return "prod"
-    else:
-        if not experiment:
-            raise ValueError("experiment_name is required for test env")
+        return "experiment" if experiment else "prod"
+
+    if not experiment:
+        raise ValueError("experiment_name is required for test env")
+
     return "test"
 
 
-def _template_dir(env: str, experiment: str, group: str, job: str) -> str:
+def _template_dir(env: str, experiment: str | None, group: str, job: str) -> str:
     exp_dir = f"{experiment}/" if experiment else ""
     return f"configdata/confetti/configs/{env}/{exp_dir}{group}/{job}/"
 
@@ -187,7 +188,7 @@ def _render_identity_config(
     return rendered, jar_path
 
 
-def _runtime_paths(env: str, group: str, job: str, hash_: str, experiment: str) -> tuple[str, str, str, str]:
+def _runtime_paths(env: str, group: str, job: str, hash_: str, experiment: str | None) -> tuple[str, str, str, str]:
     base_key = f"configdata/confetti/runtime-configs/{env}/{group}/{job}/{hash_}/"
     runtime_base = f"s3://{_CONFIG_BUCKET}/{base_key}"
     cfg_key = base_key + "identity_config.yml"
@@ -369,12 +370,10 @@ def make_confetti_post_processing_task(
             _archive_runtime_path(aws, runtime_base)
             return
 
+        experiment_name = ti.xcom_pull(
+            task_ids=prep_task.task_id, key="confetti_experiment_name"
+        ) or ""
         bucket, prefix = aws._parse_bucket_and_key(runtime_base, None)
-        start_key = prefix.rstrip("/") + "/_START"
-        try:
-            experiment_name = aws.read_key(start_key, bucket_name=bucket).strip()
-        except Exception:
-            experiment_name = ""
 
         success_key = prefix.rstrip("/") + "/_SUCCESS"
         content = yaml.safe_dump(
@@ -397,7 +396,7 @@ def _prepare_runtime_config(
         group: str,
         job: str,
         run_date: str,
-        experiment: str,
+        experiment: str | None,
         timeout: timedelta,
         return_jar_path: bool = False,
 ) -> tuple[str, bool] | tuple[str, bool, str]:
@@ -438,7 +437,7 @@ def make_confetti_tasks(
         *,
         group_name: str,
         job_name: str,
-        experiment_name: str = "",
+        experiment_name: str | None = None,
         run_date: str = "{{ ds }}",
         check_timeout: timedelta = timedelta(hours=2),
         task_id_prefix: str = "",
@@ -466,6 +465,7 @@ def make_confetti_tasks(
         context["ti"].xcom_push(key="confetti_runtime_config_base_path", value=rb)
         context["ti"].xcom_push(key="skip_job", value=skip)
         context["ti"].xcom_push(key="audienceJarPath", value=jar)
+        context["ti"].xcom_push(key="confetti_experiment_name", value=experiment_name or "")
 
     prep_task = OpTask(op=PythonOperator(
         task_id=f"{task_id_prefix}prepare_confetti_{job_name}",
