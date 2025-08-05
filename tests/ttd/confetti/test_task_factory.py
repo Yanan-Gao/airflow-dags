@@ -1,30 +1,31 @@
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch, call
 from datetime import timedelta
+from typing import Any, Dict
+from unittest.mock import MagicMock, patch, call
 import yaml
 
 # provide minimal airflow stubs so imports succeed
-fake_airflow = types.ModuleType("airflow")
-fake_ops = types.ModuleType("airflow.operators")
-fake_py = types.ModuleType("airflow.operators.python")
-fake_timetables = types.ModuleType("airflow.timetables")
-fake_timetables_base = types.ModuleType("airflow.timetables.base")
-fake_timetables_interval = types.ModuleType("airflow.timetables.interval")
-fake_security = types.ModuleType("airflow.security")
-fake_models = types.ModuleType("airflow.models")
-fake_models_dag = types.ModuleType("airflow.models.dag")
-fake_settings = types.ModuleType("airflow.settings")
-fake_hooks = types.ModuleType("airflow.hooks")
-fake_hooks_base = types.ModuleType("airflow.hooks.base")
-fake_utils = types.ModuleType("airflow.utils")
-fake_utils_trigger = types.ModuleType("airflow.utils.trigger_rule")
-fake_utils_state = types.ModuleType("airflow.utils.state")
-fake_ops_subdag = types.ModuleType("airflow.operators.subdag")
-fake_utils_task_group = types.ModuleType("airflow.utils.task_group")
-fake_ttdslack = types.ModuleType("ttd.ttdslack")
-fake_pendulum_tz = types.ModuleType("pendulum.tz.timezone")
+fake_airflow: Any = types.ModuleType("airflow")
+fake_ops: Any = types.ModuleType("airflow.operators")
+fake_py: Any = types.ModuleType("airflow.operators.python")
+fake_timetables: Any = types.ModuleType("airflow.timetables")
+fake_timetables_base: Any = types.ModuleType("airflow.timetables.base")
+fake_timetables_interval: Any = types.ModuleType("airflow.timetables.interval")
+fake_security: Any = types.ModuleType("airflow.security")
+fake_models: Any = types.ModuleType("airflow.models")
+fake_models_dag: Any = types.ModuleType("airflow.models.dag")
+fake_settings: Any = types.ModuleType("airflow.settings")
+fake_hooks: Any = types.ModuleType("airflow.hooks")
+fake_hooks_base: Any = types.ModuleType("airflow.hooks.base")
+fake_utils: Any = types.ModuleType("airflow.utils")
+fake_utils_trigger: Any = types.ModuleType("airflow.utils.trigger_rule")
+fake_utils_state: Any = types.ModuleType("airflow.utils.state")
+fake_ops_subdag: Any = types.ModuleType("airflow.operators.subdag")
+fake_utils_task_group: Any = types.ModuleType("airflow.utils.task_group")
+fake_ttdslack: Any = types.ModuleType("ttd.ttdslack")
+fake_pendulum_tz: Any = types.ModuleType("pendulum.tz.timezone")
 fake_pendulum_tz.FixedTimezone = type("FixedTimezone", (), {})
 fake_pendulum_tz.Timezone = type("Timezone", (), {})
 
@@ -141,7 +142,7 @@ fake_py.ShortCircuitOperator = _DummyOp
 fake_ops.python = fake_py
 fake_airflow.operators = fake_ops
 
-fake_exc = types.ModuleType("airflow.exceptions")
+fake_exc: Any = types.ModuleType("airflow.exceptions")
 
 
 class DummyAirflowException(Exception):
@@ -150,7 +151,7 @@ class DummyAirflowException(Exception):
 
 fake_exc.AirflowException = DummyAirflowException
 
-fake_s3 = types.ModuleType("airflow.providers.amazon.aws.hooks.s3")
+fake_s3: Any = types.ModuleType("airflow.providers.amazon.aws.hooks.s3")
 
 
 class DummyS3Hook:
@@ -267,7 +268,7 @@ class FactoryTest(unittest.TestCase):
         mock_inject.return_value = "audienceJarPath: bar"
 
         prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
-        ctx = {"ds": "2020-01-01", "ti": MagicMock()}
+        ctx: Dict[str, Any] = {"ds": "2020-01-01", "ti": MagicMock()}
         prep.first_airflow_op().execute(context=ctx)
         ctx["ti"].xcom_pull.return_value = False
         ctx["ti"].xcom_push.assert_any_call(key="confetti_runtime_config_base_path", value=unittest.mock.ANY)
