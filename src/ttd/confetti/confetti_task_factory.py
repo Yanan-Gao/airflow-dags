@@ -11,7 +11,8 @@ from typing import Tuple
 import yaml
 import subprocess
 
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.python import PythonOperator, BranchPythonOperator
+from airflow.operators.empty import EmptyOperator
 
 from ttd.tasks.op import OpTask
 
@@ -449,16 +450,17 @@ def make_confetti_tasks(
         run_date: str = "{{ ds }}",
         check_timeout: timedelta = timedelta(hours=2),
         task_id_prefix: str = "",
-) -> Tuple[OpTask, OpTask]:
-    """Return (prepare_task, gate_task) for Confetti jobs.
+) -> Tuple[OpTask, OpTask, OpTask, OpTask]:
+    """Return (prepare_task, gate_task, run_task, skip_task) for Confetti jobs.
 
-    Both tasks are ``OpTask`` instances wrapping an underlying Airflow
-    ``PythonOperator`` and ``ShortCircuitOperator`` so that they can be
-    chained with other :class:`BaseTask` objects using ``>>``.
+    ``prepare_task`` is a ``PythonOperator`` that sets up runtime configuration.
+    ``gate_task`` is a ``BranchPythonOperator`` that branches to ``run_task``
+    or ``skip_task`` depending on whether the downstream job should execute.
+    ``run_task`` and ``skip_task`` are ``EmptyOperator`` instances that can be
+    used to chain further tasks via ``>>``.
 
-    ``task_id_prefix`` can be used to avoid duplicate task IDs when a
-    single DAG instantiates multiple Confetti tasks for the same
-    ``job_name``.
+    ``task_id_prefix`` can be used to avoid duplicate task IDs when a single
+    DAG instantiates multiple Confetti tasks for the same ``job_name``.
     """
 
     def _prep(**context):
@@ -479,11 +481,18 @@ def make_confetti_tasks(
         python_callable=_prep,
     ))
 
+    run_task = OpTask(op=EmptyOperator(
+        task_id=f"{task_id_prefix}confetti_run_{job_name}"
+    ))
+    skip_task = OpTask(op=EmptyOperator(
+        task_id=f"{task_id_prefix}confetti_skip_{job_name}"
+    ))
+
     def _should_run(**context):
         ti = context["ti"]
         skip = ti.xcom_pull(task_ids=prep_task.task_id, key="skip_job")
         if not skip:
-            return True
+            return run_task.task_id
 
         runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
 
@@ -504,14 +513,14 @@ def make_confetti_tasks(
             if prev_out_path != current_out_path:
                 _copy_s3_prefix(aws, prev_out_path, current_out_path)
 
-            return False
+            return skip_task.task_id
         except Exception as exc:  # pragma: no cover - unexpected failure
             logger.exception("Fast pass copy failed: %s", exc)
-            return True
+            return run_task.task_id
 
-    gate_task = OpTask(op=ShortCircuitOperator(
+    gate_task = OpTask(op=BranchPythonOperator(
         task_id=f"{task_id_prefix}confetti_should_run_{job_name}",
         python_callable=_should_run,
     ))
 
-    return prep_task, gate_task
+    return prep_task, gate_task, run_task, skip_task
