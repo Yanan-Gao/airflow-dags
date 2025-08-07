@@ -238,9 +238,11 @@ class ResolveEnvTest(unittest.TestCase):
     def test_prod_with_experiment(self):
         self.assertEqual(resolve_env("prod", "exp"), "experiment")
 
-    def test_test_env_requires_experiment(self):
-        with self.assertRaises(ValueError):
-            resolve_env("test", "")
+    def test_non_prod_without_experiment(self):
+        self.assertEqual(resolve_env("test", ""), "test")
+
+    def test_non_prod_with_experiment(self):
+        self.assertEqual(resolve_env("test", "exp"), "experiment")
 
 
 class TemplateTest(unittest.TestCase):
