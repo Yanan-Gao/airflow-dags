@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/google/yapf
+    rev: v0.40.2
+    hooks:
+      - id: yapf
+        name: yapf
+        args: ['--style=./code_tool_config/.style.yapf', '--in-place', '--parallel']
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.0
+    hooks:
+      - id: flake8
+        name: flake8
+        args: [ '--append-config=./code_tool_config/.flake8' ]
+        exclude: '(src/ttd/el_dorado/v2)|(src/dags/fineng/edw)'
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy
+        args: ['--config-file=./code_tool_config/.mypy.ini']

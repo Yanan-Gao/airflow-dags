@@ -1,0 +1,37 @@
+dataVersion: v1
+kind: CustomEvents
+events:
+  - type: RequestReports
+    sql: |
+        select ScheduleId as Id,
+            s.ReportDefinitionid,
+            u.Email as UserId,
+            ScheduleAddedBy,
+            ScheduleSourceID,
+            cast(CreationDate AS DATETIME2(3)) as CreationTimestamp,
+            cast(ScheduleStartDate as date) as request_date
+        FROM rptsched.Schedule s
+          JOIN UserProfile.dbo.[User] u on u.UserId = s.RequestedByUserId
+        WHERE ScheduleSourceId in (1, 5) and cast(ScheduleStartDate as date) = '{start_date}'
+  - type: CampaignCreation
+    sql: |
+      SELECT u.Email as UserId, CampaignId as Id, CampaignId, AdvertiserId, PartnerId, CreatedByUserId, CreatedAt, 
+            CAST(CreatedAt AS DATE) as date, CreatedAt as timestamp, 
+              CASE
+                  WHEN cmp.CREATEDFROMSOURCEID IN (11, 12, 13, 14, 16, 17, 18, 19, 20, 105 )
+                          THEN 'Kokai'
+                  ELSE 'Solimar'
+              END as CreatedFromSource
+      FROM dbo.Campaign cmp
+          JOIN [UserProfile].dbo.[User] u ON u.UserId = cmp.CreatedByUserId 
+      WHERE
+          CreatedAt >= '{start_date}' AND CreatedAt < dateadd(DAY, 1, CAST('{start_date}' AS DATE))
+  - type: ConversionAdditionByUser
+    sql: |
+      SELECT CLApplicationUser as UserEmail, cc.TrackingTagId, CampaignId, cc.AdvertiserId, CLChangeTimeUtc as ChangeTime, ts.HitCount7Day, CLStatus
+      FROM changelog.raw_dbo_CampaignConversionReportingColumn cc
+            JOIN dbo.TrackingTag tt on tt.TrackingTagId = cc.TrackingTagId
+            JOIN dbo.TargetingDataHitCountStats ts on ts.TargetingDataId = tt.TargetingDataId
+      WHERE CLApplicationUser not in ('e2etests@thetradedesk.com')
+          AND CLChangeTimeUtc >= '{start_date}' AND CLChangeTimeUtc < dateadd(DAY, 1, CAST('{start_date}' AS DATE))
+  

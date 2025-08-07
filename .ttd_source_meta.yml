@@ -1,0 +1,10 @@
+file_rules:
+  # IDNT owned files
+  - regex: ^src\/(dags\/idnt|ttd\/identity_graphs)\/.*$
+    notify:
+      destinations:
+        - "#scrum-idnt-codereview"
+  - regex: ^src/dags/chgrow.*$
+    notify:
+      destinations:
+        - "#dev-chgrow-mergerequest"

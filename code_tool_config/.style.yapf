@@ -1,0 +1,11 @@
+[style]
+based_on_style = pep8
+column_limit = 140
+align_closing_bracket_with_visual_indent = true
+allow_multiline_lambdas = true
+coalesce_brackets = true
+dedent_closing_brackets = true
+split_before_dot = true
+split_before_first_argument = true
+split_penalty_after_opening_bracket = 100000
+split_penalty_for_added_line_split = 500

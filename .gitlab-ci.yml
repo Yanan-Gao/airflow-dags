@@ -1,0 +1,651 @@
+default:
+  image:
+    name: $IMAGE_NAME_CI
+    pull_policy: always
+
+workflow:
+  rules:
+    # Don't execute CI pipeline on release preparation commits.
+    - if: '$CI_COMMIT_BRANCH =~ /^main|master/i'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+include:
+  - project: thetradedesk/teams/dataproc/shared-stuff
+    ref: master
+    file:
+      - ci-templates/.helper-functions.yml
+      - ci-templates/.ci-image-build.yml
+      - ci-templates/.canary-regression.yml
+  - project: thetradedesk/teams/dataproc/otel-gateway
+    ref: master
+    file: ci-templates/.default-after-script-log-duration.yml
+
+
+.push_metric:
+  - |
+    function push_to_metrics_db() {
+      local name="$1"
+      local labels="$2" # As json dict for Postgres
+      local value="$3"
+      local fail_on_error="${4:-false}"
+    
+      local timestamp=$(date -u +"%Y-%m-%d %H:%M:%S%z")
+    
+      export PGPASSWORD="$METRICS_DB_PASSWORD"
+      
+      psql -h "$METRICS_DB_HOST" -U "$METRICS_DB_USER" -d "$METRICS_DB_NAME" -c "
+      SELECT metrics.insert_metric(
+          '${name}',
+          '${timestamp}',
+          '${labels}'::jsonb,
+          ${value}
+      );
+      " || exit_code=$?
+      
+      if [[ $exit_code -ne 0 ]]; then
+        echo "Failed to push! ${name} - ${labels} - ${value}"
+        if [[ "$fail_on_error" == "true" ]]; then
+          exit 1
+        fi
+      else
+        echo "Successfully pushed ${name} - ${labels} - ${value}"
+      fi
+    }
+      
+
+variables:
+  IMAGE_REPO_CI: "airflow2-ci"
+  IMAGE_NAME_CI: ${REGISTRY}/${IMAGE_PATH}/${IMAGE_REPO_CI}:master
+  AIRFLOW_IMAGE: "dev.docker.adsrvr.org/dataproc/ttd-airflow:prod-latest"
+  FS_SIDECAR_POD_LABELS: "app.kubernetes.io/component=fs-sidecar"
+  EFS_REPO_BASE_DIR: "/mnt/efs/airflow-dags"
+  EFS_REPO_CURRENT_DIR: "/mnt/efs/airflow-dags/current"
+  EFS_REPO_TARBALL_PATH: "/tmp/airflow-dags-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}.tgz"
+  EFS_REPO_TARBALL_DIR: "/mnt/efs/airflow-dags/airflow-dags-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+  LOCAL_REPO_ARTIFACT_TMP_PATH: "/tmp/airflow-dags-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}.tgz"
+  LOCAL_REPO_ARTIFACT_PATH: "${CI_PROJECT_DIR}/airflow-dags-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}.tgz"
+  CORE_DIRS: './src/ttd ./plugins'
+
+stages:
+  - ci_image_build
+  - build
+  - prodtest_deploy
+  - test
+  - test_deploy
+  - code_checks
+  - staging_deploy
+  - deploy
+
+create_tarball:
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "merge_request_event"
+  artifacts:
+    paths:
+    - $LOCAL_REPO_ARTIFACT_PATH
+    expire_in: 1 week
+  script:
+  - cd $CI_PROJECT_DIR
+  - tar cfz $LOCAL_REPO_ARTIFACT_TMP_PATH --exclude=.git .
+  - mv $LOCAL_REPO_ARTIFACT_TMP_PATH $LOCAL_REPO_ARTIFACT_PATH
+
+.link_airflow_folders: &link_airflow_folders
+  - ln -sf $CI_PROJECT_DIR/src /opt/airflow/src
+  - ln -sf $CI_PROJECT_DIR/plugins /opt/airflow/plugins
+  - ln -sf $CI_PROJECT_DIR/config /opt/airflow/config
+
+unit_tests:
+  stage: test
+  needs: []
+  image:
+    name: $AIRFLOW_IMAGE
+    pull_policy: always
+  before_script:
+    *link_airflow_folders
+  script:
+    - python -m unittest discover --top-level-directory . --start-directory ./tests --pattern "*test*.py" -v
+
+validate_dags:
+  stage: test
+  needs: []
+  image:
+    name: $AIRFLOW_IMAGE
+    pull_policy: always
+  before_script:
+    - !reference [.link_airflow_folders]
+  script:
+    - python .ci/validate_dags.py
+  variables:
+    AIRFLOW__CORE__DAGS_FOLDER: '${CI_PROJECT_DIR}/src/dags'
+    AIRFLOW__SECRETS__BACKEND: 'ttd.secrets.vault_secrets_backend.VaultSecretsBackend'
+  tags:
+    - high-resources
+
+python_formatting:
+  stage: code_checks
+  image:
+    name: $AIRFLOW_IMAGE
+    pull_policy: always
+  script:
+    - yapf --diff --recursive --parallel --style=$CI_PROJECT_DIR/code_tool_config/.style.yapf $CI_PROJECT_DIR
+
+python_linter:
+  stage: code_checks
+  image:
+    name: $AIRFLOW_IMAGE
+    pull_policy: always
+  script:
+    - flake8 --append-config=$CI_PROJECT_DIR/code_tool_config/.flake8 $CI_PROJECT_DIR
+
+python_type_checking:
+  stage: code_checks
+  image:
+    name: $AIRFLOW_IMAGE
+    pull_policy: always
+  script:
+    - mypy --config-file=$CI_PROJECT_DIR/code_tool_config/.mypy.ini $CI_PROJECT_DIR
+
+.set_k8s_context: &set_k8s_context
+    - kubectl config set-cluster $K8S_CONTEXT --server=$K8S_URL
+    - kubectl config set clusters.$K8S_CONTEXT.certificate-authority-data $K8S_CERT
+    - kubectl config set-credentials $K8S_USER --token=$K8S_CI_TOKEN
+    - kubectl config set-context $K8S_CONTEXT --cluster=$K8S_CONTEXT --namespace=$K8S_NAMESPACE --user=$K8S_USER
+    - kubectl config use-context $K8S_CONTEXT
+
+.check_for_outdated_deployment: &check_for_outdated_deployment
+  - |
+    RED='\033[1;31m'
+    if [[ "$IGNORE_CHECK_FOR_OUTDATED_DEPLOYMENT" == "false" && \
+          ( "$CI_ENVIRONMENT_NAME" == "staging" || "$CI_ENVIRONMENT_NAME" == "production" ) ]]; then
+      echo "Checking last deployment for '$CI_ENVIRONMENT_NAME'"
+      ENV_ID=$(curl -s --header "PRIVATE-TOKEN: $DATAPROC_READER_BOT_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/environments?name=$CI_ENVIRONMENT_NAME" \
+        | jq -r '.[0].id')
+    
+      LAST_DEPLOY_INFO=$(curl -s --header "PRIVATE-TOKEN: $DATAPROC_READER_BOT_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/environments/$ENV_ID" | jq -r '.last_deployment.deployable')
+      LAST_DEPLOY_COMMIT_TIMESTAMP=$(echo "$LAST_DEPLOY_INFO" | jq -r '.commit.created_at')
+      LAST_DEPLOY_COMMIT_SHA=$(echo "$LAST_DEPLOY_INFO" | jq -r '.commit.id')
+      echo "Last deploy: $LAST_DEPLOY_COMMIT_SHA at $LAST_DEPLOY_COMMIT_TIMESTAMP"
+      PREVIOUS_DEPLOYMENT_PIPELINE_ID=$(echo "$LAST_DEPLOY_INFO" | jq -r '.pipeline.id')
+      echo "PREVIOUS_DEPLOYMENT_PIPELINE_ID=$PREVIOUS_DEPLOYMENT_PIPELINE_ID"
+      echo "PREVIOUS_DEPLOYMENT_PIPELINE_ID=$PREVIOUS_DEPLOYMENT_PIPELINE_ID" >> previous_deployment.env
+    
+      if [[ "$CI_COMMIT_SHA" != "$LAST_DEPLOY_COMMIT_SHA" ]] && (( $(date -d "$LAST_DEPLOY_COMMIT_TIMESTAMP" +%s) > $(date -d "$CI_COMMIT_TIMESTAMP" +%s) )); then
+        echo -e "${RED}>> Your change (SHA: ${CI_COMMIT_SHA})"
+        echo -e "${RED}   was already included in deployed commit (SHA: ${LAST_DEPLOY_COMMIT_SHA})"
+        echo -e "${RED}>> No action needed — skipping current deployment"
+        exit 1
+      fi
+      echo "Deployment is up-to-date or newer than last deploy"
+    
+      echo "Checking for core dir changes..."        
+      CORE_CHANGED_FILES=$(git diff --name-only $DIFF_POINT -- $CORE_DIRS)
+      echo "CORE_CHANGED_FILES=$CORE_CHANGED_FILES"
+      CORE_CHANGED=$( [[ -n "$CORE_CHANGED_FILES" ]] && echo true || echo false )
+      echo "CORE_CHANGED=$CORE_CHANGED"
+      echo "CORE_CHANGED=$CORE_CHANGED" >> previous_deployment.env
+
+      if [[ "$CORE_CHANGED" == false ]] || [[ "$CI_PIPELINE_SOURCE" == "schedule" ]]; then
+        echo "No core changes or schedule pipeline"
+        echo "Verifying branch head..."
+        LATEST_COMMIT=$(curl -s --header "PRIVATE-TOKEN: $DATAPROC_READER_BOT_TOKEN" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/branches/$CI_COMMIT_REF_NAME" \
+          | jq -r '.commit.id')
+    
+        echo "Branch HEAD=$LATEST_COMMIT"
+        if [[ "$CI_COMMIT_SHA" != "$LATEST_COMMIT" ]]; then
+          echo -e "${RED}>> A newer pipeline ran on commit (SHA: ${LATEST_COMMIT})"
+          echo -e "${RED}   It already includes your change (SHA: ${CI_COMMIT_SHA}) and will deploy it shortly"
+          echo -e "${RED}>> No action needed — skipping current deployment"
+          exit 1
+        fi
+      else
+        echo "Core changes detected -> Bypassing branch-head check"
+      fi
+      echo "Pre-deploy checks passed"
+    else
+      echo "Skipping deployment freshness checks (flag='$IGNORE_CHECK_FOR_OUTDATED_DEPLOYMENT', environment='$CI_ENVIRONMENT_NAME')"
+    fi
+
+.deploy_before_script: &deploy_before_script
+  before_script:
+    - *set_k8s_context
+    - *check_for_outdated_deployment
+
+.copy_files: &copy_files
+    - cd $CI_PROJECT_DIR
+    - files_to_delete=$(git diff --diff-filter=DR --name-status $DIFF_POINT -- $TARGET_DIRS | awk '{print $2}'  )
+    - 'echo "Files to delete:"'
+    - 'printf "%s\n" "${files_to_delete[@]}"'
+    - files_to_deploy=$(git diff --diff-filter=d --name-only $DIFF_POINT -- $TARGET_DIRS )
+    - 'echo "Files to deploy:"'
+    - 'printf "%s\n" "${files_to_deploy[@]}"'
+    - pod_name=$(kubectl --namespace $K8S_NAMESPACE get pods --selector ${FS_SIDECAR_POD_LABELS} -o jsonpath="{.items[0].metadata.name}")
+    - 'echo "Deleting from pod name: ${pod_name}"'
+    - >
+      for file_to_delete in ${files_to_delete[@]}; do
+        kubectl --namespace $K8S_NAMESPACE exec -i $pod_name -- rm -f $EFS_REPO_CURRENT_DIR/$file_to_delete
+      done
+    - 'echo "Deploying to pod name: ${pod_name}"'
+    - > 
+      for file_to_deploy in ${files_to_deploy[@]}; do
+        kubectl --namespace $K8S_NAMESPACE exec -i $pod_name -- mkdir -p $(dirname $EFS_REPO_CURRENT_DIR/$file_to_deploy)
+        kubectl --namespace $K8S_NAMESPACE cp $file_to_deploy $pod_name:$EFS_REPO_CURRENT_DIR/$file_to_deploy
+      done
+
+.core_change_dirs: &core_change_dirs
+  - src/ttd/**/*
+  - plugins/**/*
+
+deploy_dags_to_test:
+  <<: *deploy_before_script
+  stage: test_deploy
+  environment:
+    name: test/dags
+    url: https://airflow2.test.gen.adsrvr.org
+  rules:
+    - if: '$CI_COMMIT_BRANCH != "main-airflow-2"'
+      when: manual
+  allow_failure: true
+  script:
+    - *copy_files
+  variables:
+    DIFF_POINT: 'origin/main-airflow-2...'
+    TARGET_DIRS: './src/dags ./src/datasources'
+
+deploy_core_to_test:
+  <<: *deploy_before_script
+  stage: test_deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH != "main-airflow-2"'
+      changes: *core_change_dirs
+      when: manual
+  environment:
+    name: test/core
+    url: https://airflow2.test.gen.adsrvr.org
+  resource_group: test/core
+  allow_failure: true
+  script:
+   - *copy_files
+  variables:
+    DIFF_POINT: 'origin/main-airflow-2...'
+    TARGET_DIRS: './src/ttd ./plugins'
+
+regression_test:
+  stage: test_deploy
+  needs:
+    - job: deploy_core_to_test
+    - job: ci_image_build
+      optional: true
+  extends: [.canary_regression_template]
+  environment:
+    name: test/core
+    action: verify
+  resource_group: test/core
+  rules:
+    - if: '$CI_COMMIT_BRANCH != "main-airflow-2"'
+      changes: *core_change_dirs
+      when: manual
+      allow_failure: true
+  variables:
+    EXCLUDE_TASK_SERVICE_CANARY_DAGS: "true"
+  script:
+    - python ci-scripts/run_canary_dags.py
+
+.deploy_all: &deploy_all
+  variables:
+    DIFF_POINT: '$CI_COMMIT_SHA~'
+  script:
+    - POD=$(kubectl --namespace $K8S_NAMESPACE get pods --selector ${FS_SIDECAR_POD_LABELS} -o jsonpath="{.items[0].metadata.name}")
+    - 'echo "Deploying to pod name: ${POD}..."'
+    - kubectl --namespace $K8S_NAMESPACE describe pod $POD
+    - ls -la $LOCAL_REPO_ARTIFACT_PATH
+    - |
+      echo "Copying tarball into pod..."
+      COPY_TARBALL_START=$(date +%s)
+      kubectl -n $K8S_NAMESPACE cp $LOCAL_REPO_ARTIFACT_PATH $POD:$EFS_REPO_TARBALL_PATH
+      COPY_TARBALL_END=$(date +%s)
+      COPY_TARBALL_DURATION=$((COPY_TARBALL_END - COPY_TARBALL_START))
+      echo "Copy completed in ${COPY_TARBALL_DURATION}s"
+    - |
+      echo "Extracting tarball and updating symlink..."
+      SETUP_TARBALL_SYMLINK_START=$(date +%s)
+      kubectl -n $K8S_NAMESPACE exec $POD -- /bin/sh -c "\
+        mkdir -p $EFS_REPO_TARBALL_DIR && \
+        tar xfz $EFS_REPO_TARBALL_PATH -C $EFS_REPO_TARBALL_DIR && \
+        ln -nsf $EFS_REPO_TARBALL_DIR $EFS_REPO_CURRENT_DIR && \
+        rm $EFS_REPO_TARBALL_PATH"
+      SETUP_TARBALL_SYMLINK_END=$(date +%s)
+      SETUP_TARBALL_SYMLINK_DURATION=$((SETUP_TARBALL_SYMLINK_END - SETUP_TARBALL_SYMLINK_START))
+      echo "Tarball extraction and symlink update in ${SETUP_TARBALL_SYMLINK_DURATION}s"
+    - |
+      echo "Cleaning up old releases..."
+      CLEANUP_OLD_RELEASES_START=$(date +%s)
+      kubectl -n $K8S_NAMESPACE exec $POD -- /bin/sh -c "\
+        cd $EFS_REPO_BASE_DIR; \
+        current=\$(basename \$(readlink $EFS_REPO_CURRENT_DIR)); \
+        echo 'Current release:' \$current; \
+        old_dirs=\$(find . -maxdepth 1 -type d -name 'airflow-dags-*' -mtime +7 ! -name \"\$current\"); \
+        if [ -n \"\$old_dirs\" ]; then \
+          echo 'Deleting the following week-old releases:'; \
+          echo \"\$old_dirs\"; \
+          rm -rf \$old_dirs; \
+        else \
+          echo 'No week-old releases to delete'; \
+        fi"
+      CLEANUP_OLD_RELEASES_END=$(date +%s)
+      CLEANUP_OLD_RELEASES_DURATION=$((CLEANUP_OLD_RELEASES_END - CLEANUP_OLD_RELEASES_START))
+      echo "Cleanup completed in ${CLEANUP_OLD_RELEASES_DURATION}s"
+      
+    - |
+      echo "Pushing metrics..."
+      OTEL_GATEWAY_API_URL=${API_URL:-http://otel-gateway-service.otel-gateway.svc.cluster.local:80}
+      COPY_TARBALL_METRIC="airflow_cicd_copy_tarball_duration"
+      SETUP_TARBALL_SYMLINK_METRIC="airflow_cicd_setup_tarball_symlink_duration" 
+      CLEANUP_OLD_RELEASES_METRIC="airflow_cicd_cleanup_old_releases_duration"
+      
+      COPY_TARBALL_DESCRIPTION="Time taken to copy the release tarball to the target directory during Airflow deployment"
+      SETUP_TARBALL_SYMLINK_DESCRIPTION="Time taken to extract the release tarball and update the symlink during Airflow deployment"
+      CLEANUP_OLD_RELEASES_DESCRIPTION="Time taken to clean up old release directories during Airflow deployment"
+      
+      METRICS=(
+        "${COPY_TARBALL_METRIC}|${COPY_TARBALL_DURATION}|${COPY_TARBALL_DESCRIPTION}"
+        "${SETUP_TARBALL_SYMLINK_METRIC}|${SETUP_TARBALL_SYMLINK_DURATION}|${SETUP_TARBALL_SYMLINK_DESCRIPTION}"
+        "${CLEANUP_OLD_RELEASES_METRIC}|${CLEANUP_OLD_RELEASES_DURATION}|${CLEANUP_OLD_RELEASES_DESCRIPTION}"
+      )
+      
+      for metric in "${METRICS[@]}"; do
+        readarray -d '|' -t metric_part <<<"$metric|"
+      
+        name="${metric_part[0]}"
+        value="${metric_part[1]}"
+        description="${metric_part[2]%|}"
+      
+        json_payload=$(cat <<EOF
+      {
+        "description": "$description",
+        "labels": {
+          "ci_job_name": "$CI_JOB_NAME",
+          "ci_job_id": "$CI_JOB_ID",
+          "ci_pipeline_id": "$CI_PIPELINE_ID"
+        }
+      }
+      EOF
+      )
+        curl -X POST "$OTEL_GATEWAY_API_URL/gauge/$name?value=$value" \
+            -H "Content-Type: application/json" \
+            -d "$json_payload"
+      done
+
+staging_deploy:
+  <<: *deploy_before_script
+  <<: *deploy_all
+  stage: staging_deploy
+  allow_failure: false
+  resource_group: staging
+  environment:
+    name: staging
+    url: https://airflow2-staging.gen.adsrvr.org
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "merge_request_event"
+  artifacts:
+    reports:
+      dotenv: previous_deployment.env
+
+regression_staging:
+  stage: staging_deploy
+  needs:
+    - job: staging_deploy
+    - job: ci_image_build
+      optional: true
+  extends: [.canary_regression_template]
+  environment:
+    name: staging
+    action: verify
+  resource_group: staging
+  rules:
+    - if: '$SKIP_REGRESSION == "true"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main-airflow-2"'
+      when: on_success
+    - when: never
+  script:
+    - |
+      echo "CORE_CHANGED=$CORE_CHANGED"
+      echo "Checking previous $CI_JOB_NAME job in pipeline $PREVIOUS_DEPLOYMENT_PIPELINE_ID"
+      PREVIOUS_JOB_STATUS=$(curl -s --header "PRIVATE-TOKEN: $DATAPROC_READER_BOT_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/pipelines/$PREVIOUS_DEPLOYMENT_PIPELINE_ID/jobs" \
+          | jq -r --arg job "$CI_JOB_NAME" '
+              [ .[] 
+                | select(.name == $job)
+              ]
+              | sort_by(.id)
+              | last
+              | .status // "not_found"
+            '
+      )
+      echo "Previous $CI_JOB_NAME status = $PREVIOUS_JOB_STATUS"
+      if [[ "$CORE_CHANGED" == "false" && "$PREVIOUS_JOB_STATUS" == "success" ]]; then
+        echo "No core changes & previous regression still green — skipping..."
+        exit 0
+      fi
+    - |
+      echo "Running regression tests"
+      python ci-scripts/run_canary_dags.py
+
+prod_deploy:
+  <<: *deploy_before_script
+  <<: *deploy_all
+  stage: deploy
+  resource_group: production
+  environment:
+      name: production
+      url: https://airflow2.gen.adsrvr.org
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "merge_request_event"
+
+resync_test:
+  <<: *deploy_before_script
+  stage: deploy
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "merge_request_event"
+  allow_failure: true
+  environment: test/dags
+  script:
+   - *copy_files
+  variables:
+    DIFF_POINT: '$CI_COMMIT_SHA~'
+    TARGET_DIRS: './src ./plugins'
+
+.deploy_prodtest: &deploy_prodtest
+  <<: *deploy_before_script
+  stage: prodtest_deploy
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+  environment: &deploy_prodtest_env
+    name: r/$CI_COMMIT_REF_SLUG
+    url: https://airflow-$CI_ENVIRONMENT_SLUG.dev.gen.adsrvr.org
+    on_stop: stop_prodtest
+    action: start
+    deployment_tier: development
+  script:
+    - !reference [ .helper_functions ]
+    - !reference [ .push_metric ]
+    - push_to_metrics_db "airflow_prodtest_created" "{\"mr_id\":\"$CI_MERGE_REQUEST_IID\", \"user_name\":\"$GITLAB_USER_LOGIN\"}" 1
+    - |
+      cat <<EOF >./airflow-prodtest/dynamic_values.yaml
+        ###
+      name: ${CI_ENVIRONMENT_SLUG}
+      ref: ${CI_COMMIT_REF_NAME} 
+      url: airflow-$CI_ENVIRONMENT_SLUG.dev.gen.adsrvr.org
+      user_login: ${GITLAB_USER_LOGIN}
+      mr_url: ${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}
+      EOF
+    - cat ./airflow-prodtest/dynamic_values.yaml
+    - chart_name=${CI_ENVIRONMENT_SLUG}-chart
+    - |
+      created_message="Prodtest environment: \`${CI_ENVIRONMENT_NAME}\` has been created. 
+      It should be accessible in a minute or two at ${CI_ENVIRONMENT_URL}.
+
+      Use User: \`airflow\` and Password: \`airflow\` to gain access."
+      
+      creating_message="Prodtest environment: \`${CI_ENVIRONMENT_NAME}\` is being created. 
+      This comment will update once it is ready."
+      
+      updated_message="Prodtest environment: \`${CI_ENVIRONMENT_NAME}\` has been updated to revision \`${CI_COMMIT_SHORT_SHA}\`!
+      It should be accessible at ${CI_ENVIRONMENT_URL}.
+
+      Use User: \`airflow\` and Password: \`airflow\` to gain access."
+      
+      build_filesystem_includes() {
+        local changed_files="$1"
+        local deploy_all="$2"
+        
+        local team_includes=()
+        if [[ -n "$changed_files" ]]; then
+            team_includes=($(printf "%s\n" "$changed_files" | grep dags | awk -F/ '{print "--include=" $1 "/" $2 "/" $3 "/"; print "--include=" $1 "/" $2 "/" $3 "/**"}' | sort -u || true))
+        fi
+        
+        local includes=(
+            --include='config/'
+            --include='config/**'
+            --include='src/'
+            --include='src/dags/'
+            --include='src/dags/dataproc/'
+            --include='src/dags/dataproc/regression/'
+            --include='src/dags/dataproc/regression/**'
+            --include='src/datasources/'
+            --include='src/datasources/**'
+            --include='src/ttd/'
+            --include='src/ttd/**'
+            --include='plugins/'
+            --include='plugins/**'
+        )
+        
+        if [[ "$deploy_all" == "true" ]] || [[ ${#team_includes[@]} -eq 0 ]]; then
+            echo "Deploying all DAGs..."
+            includes+=(--include='src/dags/**')
+        else
+            echo "Team includes: ${team_includes[*]}"
+            includes+=("${team_includes[@]}")
+        fi
+        
+        INCLUDES=("${includes[@]}")
+      }
+      
+      update_filesystem () {
+        local changed_files
+        changed_files=$(git diff --name-only "origin/main-airflow-2...")
+        echo "changed_files=$changed_files"
+        echo "DEPLOY_ALL=$DEPLOY_ALL"
+        build_filesystem_includes "$changed_files" "$DEPLOY_ALL"
+        echo "INCLUDES:"
+        printf "  %s\n" "${INCLUDES[@]}"
+
+        POD=$(kubectl --namespace $K8S_NAMESPACE get pods --selector app=$CI_ENVIRONMENT_SLUG,component=airflow -o jsonpath="{.items[0].metadata.name}")
+        kubectl --namespace $K8S_NAMESPACE exec ${POD} -c filesystem -- /bin/sh -c "mkdir -p /tmp/airflow-temp"
+        kubectl --namespace $K8S_NAMESPACE cp ${CI_PROJECT_DIR} ${POD}:/tmp/airflow-temp -c filesystem        
+        kubectl --namespace $K8S_NAMESPACE exec ${POD} -c filesystem -- \
+            rsync -rv "${INCLUDES[@]}" --exclude='*' --prune-empty-dirs --delete-excluded /tmp/airflow-temp/airflow-dags/ /mnt/efs/airflow-dags/current
+        kubectl --namespace $K8S_NAMESPACE exec ${POD} -c filesystem -- rm -rf /tmp/airflow-temp
+        echo "Filesystem update complete"
+      }
+    
+      uninstall_chart () {
+        helm uninstall $chart_name --namespace=${K8S_NAMESPACE} --cascade foreground
+        sleep 1 # Helm occasionally doesn't wait fully for resource termination
+      }
+    
+      install_chart () {
+        post_mr_comment_2 "$creating_message" $DATAPROC_HELPER_BOT_TOKEN by_text "Prodtest environment:" debug
+        helm install $chart_name ./airflow-prodtest -f ./airflow-prodtest/constant_values.yaml -f ./airflow-prodtest/dynamic_values.yaml --wait --namespace=${K8S_NAMESPACE}
+        kubectl --namespace=${K8S_NAMESPACE} wait pod -l app=$CI_ENVIRONMENT_SLUG,component=airflow --for=condition=Ready --timeout=60s
+        update_filesystem
+        kubectl --namespace $K8S_NAMESPACE wait --for=condition=Ready pod/${POD} --timeout=120s
+        post_mr_comment_2 "$created_message" $DATAPROC_HELPER_BOT_TOKEN by_text "Prodtest environment:" debug
+      }
+
+    - |
+      if helm list --namespace=${K8S_NAMESPACE} --deployed | grep -q  $chart_name; then
+          if ! kubectl --namespace=${K8S_NAMESPACE} wait pod -l app=$CI_ENVIRONMENT_SLUG,component=airflow --for=condition=Ready --timeout=0 ; then
+              echo "Pod for environment $CI_ENVIRONMENT_NAME is missing or in unhealthy state. Uninstalling and reinstalling chart"
+              uninstall_chart
+              install_chart
+          else
+              echo "Release $chart_name exists and pod in healthy state, so updating file system..."
+              update_filesystem
+              post_mr_comment_2 "$updated_message" $DATAPROC_HELPER_BOT_TOKEN by_text "Prodtest environment:" debug
+          fi
+      elif helm list --namespace=${K8S_NAMESPACE} | grep -q  $chart_name; then
+          echo "Release $chart_name exists in incorrect state - reinstall."
+          uninstall_chart
+          install_chart
+      else
+          echo "Release $chart_name doesn't exist, so installing..."
+          install_chart
+      fi
+
+
+1week_prodtest:
+  <<: *deploy_prodtest
+  environment:
+    <<: *deploy_prodtest_env
+    auto_stop_in: 1 week
+
+3week_prodtest:
+  <<: *deploy_prodtest
+  environment:
+    <<: *deploy_prodtest_env
+    auto_stop_in: 3 weeks
+
+all_dags_prodtest:
+  <<: *deploy_prodtest
+  environment:
+    <<: *deploy_prodtest_env
+    auto_stop_in: 1 weeks
+  variables:
+    DEPLOY_ALL: true
+
+regression_prodtest:
+  stage: prodtest_deploy
+  extends: [.canary_regression_template]
+  environment:
+    name: r/$CI_COMMIT_REF_SLUG
+    action: verify
+  needs:
+    - job: ci_image_build
+      optional: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: *core_change_dirs
+      when: manual
+      allow_failure: true
+  variables:
+    AIRFLOW_API_USER: "airflow"
+    AIRFLOW_API_PASS: "airflow"
+    EXCLUDE_TASK_SERVICE_CANARY_DAGS: "true"
+  script:
+    - python ci-scripts/run_canary_dags.py
+
+stop_prodtest:
+  stage: prodtest_deploy
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+  script:
+    - *set_k8s_context
+    - !reference [ .push_metric ]
+    - |
+      if [ "$CI_JOB_MANUAL" == "true" ]; then
+        echo "Destroy step run manually"
+        push_to_metrics_db "airflow_prodtest_destroyed" "{\"mr_id\":\"$CI_MERGE_REQUEST_IID\", \"user_name\":\"$GITLAB_USER_LOGIN\"}" 1
+      fi
+    - helm uninstall ${CI_ENVIRONMENT_SLUG}-chart --namespace=${K8S_NAMESPACE}
+  environment:
+    name: r/$CI_COMMIT_REF_SLUG
+    action: stop
