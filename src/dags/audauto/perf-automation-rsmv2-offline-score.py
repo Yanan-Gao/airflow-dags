@@ -211,8 +211,8 @@ emr_cluster_part1 = utils.create_emr_cluster(
     name="AUDAUTO-Audience-RSMV2-Relevance-Offline-part1", capacity=emr_capacity, bootstrap_script_actions=bootstrap_script_actions
 )
 
-# Confetti prepare/gate for the Imp2Br model input generation
-prep_imp2br, gate_imp2br, run_imp2br, skip_imp2br = make_confetti_tasks(
+# Confetti tasks for the Imp2Br model input generation
+prep_imp2br, run_imp2br, skip_imp2br = make_confetti_tasks(
     group_name="audience",
     job_name="Imp2BrModelInferenceDataGenerator",
     experiment_name=experiment,
@@ -257,7 +257,7 @@ emr_cluster_part2 = utils.create_emr_cluster(
 )
 
 # Prepare Confetti runtime config for all part2 jobs
-prep_part2, gate_part2, run_part2, skip_part2 = make_confetti_tasks(
+prep_part2, run_part2, skip_part2 = make_confetti_tasks(
     group_name="audience",
     job_name="RelevanceModelOfflineScoringPart2",
     experiment_name=experiment,
@@ -370,12 +370,12 @@ data_quality_check = utils.create_emr_spark_job(
     emr_cluster_part2,
 )
 
-rsm_etl_dag >> dataset_sensor >> prep_imp2br >> gate_imp2br
-gate_imp2br >> run_imp2br >> emr_cluster_part1 >> post_processing_imp2br
-gate_imp2br >> skip_imp2br >> post_processing_imp2br
-post_processing_imp2br >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> prep_part2 >> gate_part2
-gate_part2 >> run_part2 >> emr_cluster_part2 >> post_processing_part2
-gate_part2 >> skip_part2 >> post_processing_part2
+rsm_etl_dag >> dataset_sensor >> prep_imp2br
+prep_imp2br >> run_imp2br >> emr_cluster_part1 >> post_processing_imp2br
+prep_imp2br >> skip_imp2br >> post_processing_imp2br
+post_processing_imp2br >> model_sensor >> copy_feature_json >> clean_up_raw_embedding >> prep_part2
+prep_part2 >> run_part2 >> emr_cluster_part2 >> post_processing_part2
+prep_part2 >> skip_part2 >> post_processing_part2
 emb_gen >> emb_aggregation >> emb_to_coldstorage >> emb_dot_product >> score_min_max_scale_population >> data_quality_check
 final_dag_check = OpTask(op=FinalDagStatusCheckOperator(dag=adag))
 post_processing_part2 >> final_dag_check
