@@ -163,13 +163,8 @@ def _collect_job_run_level_variables(
 def resolve_env(env: str, experiment: str) -> str:
     env = (env or "").lower()
     if env in ("prod", "production"):
-        if experiment:
-            return "experiment"
-        return "prod"
-    else:
-        if not experiment:
-            raise ValueError("experiment_name is required for test env")
-    return "test"
+        return "experiment" if experiment else "prod"
+    return "experiment" if experiment else "test"
 
 
 def _template_dir(env: str, experiment: str, group: str, job: str) -> str:
