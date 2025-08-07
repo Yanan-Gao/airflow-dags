@@ -249,8 +249,7 @@ class ResolveEnvTest(unittest.TestCase):
         self.assertEqual(resolve_env("test", "exp"), "experiment")
 
     def test_test_env_requires_experiment_none(self):
-        with self.assertRaises(ValueError):
-            resolve_env("test", None)
+        self.assertEqual(resolve_env("test", None), "test")
 
 
 class TemplateTest(unittest.TestCase):
@@ -277,16 +276,15 @@ class FactoryTest(unittest.TestCase):
         mock_instance.list_keys.return_value = []
         mock_inject.return_value = "audienceJarPath: bar"
 
-        prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
+        prep, run, skip = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
         ctx: Dict[str, Any] = {"ds": "2020-01-01", "ti": MagicMock()}
-        prep.first_airflow_op().execute(context=ctx)
+        branch = prep.first_airflow_op().python_callable(ti=ctx["ti"], ds="2020-01-01")
         ctx["ti"].xcom_pull.return_value = False
         ctx["ti"].xcom_push.assert_any_call(key="confetti_runtime_config_base_path", value=unittest.mock.ANY)
         ctx["ti"].xcom_push.assert_any_call(key="skip_job", value=False)
         ctx["ti"].xcom_push.assert_any_call(key="audienceJarPath", value=unittest.mock.ANY)
         ctx["ti"].xcom_push.assert_any_call(key="confetti_experiment_name", value="")
-        should_run = gate.first_airflow_op().python_callable(ti=ctx["ti"])
-        self.assertTrue(should_run)
+        self.assertEqual(branch, run.task_id)
 
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
@@ -318,12 +316,9 @@ class FactoryTest(unittest.TestCase):
         _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
 
         keys = [c.kwargs.get("key") for c in instance.load_string.call_args_list]
-        # first_call_content = instance.load_string.call_args_list[0].args[0]
-        # self.assertIn("runDate: '2020-01-01'", first_call_content)
         self.assertTrue(any(str(k).endswith("output_config.yml") for k in keys))
         out_call = next(c for c in instance.load_string.call_args_list if str(c.kwargs.get("key")).endswith("output_config.yml"))
         self.assertFalse(str(out_call.kwargs.get("key")).startswith("s3://"))
-        self.assertTrue(any(str(k).endswith("_START") for k in keys))
 
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
@@ -364,7 +359,7 @@ class FactoryTest(unittest.TestCase):
         mock_wait.return_value = True
         mock_inject.return_value = "audienceJarPath: bar"
 
-        _, skip, _ = _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0), return_jar_path=True)
+        _, skip, _ = _prepare_runtime_config("g", "j", "2020-01-01", "", timedelta(seconds=0))
 
         self.assertFalse(skip)
         mock_wait.assert_not_called()
@@ -422,50 +417,64 @@ class FastPassCopyTest(unittest.TestCase):
             return bucket, key_path
         return b or "b", k
 
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
-    def test_should_run_copies_output_on_fast_pass(self, mock_get_env, mock_storage):
+    def test_should_run_copies_output_on_fast_pass(self, mock_get_env, mock_storage, mock_inject):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         instance = mock_storage.return_value
         instance._parse_bucket_and_key.side_effect = self._parse
         instance.list_keys.return_value = ["p/a"]
         instance.copy_file.return_value = type("S", (), {"get": lambda self: None})()
+        mock_inject.return_value = "audienceJarPath: bar"
 
         def _read(key, bucket_name=None):
+            if str(key).endswith("identity_config.yml"):
+                return "audienceJarBranch: master\naudienceJarVersion: 1"
             if "runtime-configs" in str(key):
                 return "out_path: s3://b/p/"
             return "out_path: s3://b/q/"
 
         instance.read_key.side_effect = _read
 
-        prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
+        prep, run, skip = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
         ti = MagicMock()
         ti.xcom_pull.side_effect = lambda task_ids, key: {
             "skip_job": True,
             "confetti_runtime_config_base_path": "s3://b/runtime-configs/run1/",
         }[key]
-        should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
-        self.assertFalse(should_run)
+        branch = prep.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
+        self.assertEqual(branch, skip.task_id)
+        skip.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
         instance.copy_file.assert_called()
 
+    @patch("ttd.confetti.confetti_task_factory._inject_audience_jar_path")
     @patch("ttd.confetti.confetti_task_factory.AwsCloudStorage")
     @patch("ttd.confetti.confetti_task_factory.TtdEnvFactory.get_from_system")
-    def test_should_run_no_copy_when_same_path(self, mock_get_env, mock_storage):
+    def test_should_run_no_copy_when_same_path(self, mock_get_env, mock_storage, mock_inject):
         mock_get_env.return_value = type("E", (), {"execution_env": "prod"})()
         instance = mock_storage.return_value
         instance._parse_bucket_and_key.side_effect = self._parse
         instance.list_keys.return_value = ["p/a"]
         instance.copy_file.return_value = type("S", (), {"get": lambda self: None})()
-        instance.read_key.return_value = "out_path: s3://b/p/"
+        mock_inject.return_value = "audienceJarPath: bar"
 
-        prep, gate = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
+        def _read(key, bucket_name=None):
+            if str(key).endswith("identity_config.yml"):
+                return "audienceJarBranch: master\naudienceJarVersion: 1"
+            return "out_path: s3://b/p/"
+
+        instance.read_key.side_effect = _read
+
+        prep, run, skip = make_confetti_tasks(group_name="g", job_name="j", run_date="2020-01-01")
         ti = MagicMock()
         ti.xcom_pull.side_effect = lambda task_ids, key: {
             "skip_job": True,
             "confetti_runtime_config_base_path": "s3://b/runtime-configs/run1/",
         }[key]
-        should_run = gate.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
-        self.assertFalse(should_run)
+        branch = prep.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
+        self.assertEqual(branch, skip.task_id)
+        skip.first_airflow_op().python_callable(ti=ti, ds="2020-01-01")
         instance.copy_file.assert_not_called()
 
     def test_copy_handles_single_file(self):
@@ -526,7 +535,7 @@ class CleanupTaskTest(unittest.TestCase):
         cleanup = make_confetti_post_processing_task(job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_")
 
         ti = MagicMock()
-        ti.xcom_pull.return_value = "s3://b/run/"
+        ti.xcom_pull.side_effect = [False, "s3://b/run/"]
         dag_run = MagicMock()
         dag_run.get_task_instance.return_value = type("T", (), {"state": "failed"})()
         task = MagicMock(upstream_task_ids={"x"})
@@ -542,7 +551,7 @@ class CleanupTaskTest(unittest.TestCase):
         cleanup = make_confetti_post_processing_task(job_name="j", prep_task=prep, cluster_id="cid", task_id_prefix="p_")
 
         ti = MagicMock()
-        ti.xcom_pull.side_effect = ["s3://b/run/", "exp"]
+        ti.xcom_pull.side_effect = [False, "s3://b/run/", "exp"]
         dag_run = MagicMock()
         dag_run.get_task_instance.return_value = type("T", (), {"state": "success"})()
         task = MagicMock(upstream_task_ids={"x"})

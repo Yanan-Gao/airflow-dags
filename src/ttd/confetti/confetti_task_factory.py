@@ -11,7 +11,6 @@ from typing import Tuple
 import yaml
 
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.empty import EmptyOperator
 
 from ttd.tasks.op import OpTask
 
@@ -417,9 +416,6 @@ def _prepare_runtime_config(
 
     _upload_additional_configs(aws, tpl_dir, runtime_base_key, run_vars)
 
-    # write _START key with experiment metadata
-    aws.load_string(experiment or "", key=start_key, bucket_name=_CONFIG_BUCKET, replace=True)
-
     return (runtime_base, False, jar_path)
 
 
@@ -431,20 +427,20 @@ def make_confetti_tasks(
     run_date: str = "{{ ds }}",
     check_timeout: timedelta = timedelta(hours=2),
     task_id_prefix: str = "",
-) -> Tuple[OpTask, OpTask, OpTask, OpTask]:
-    """Return (prepare_task, gate_task, run_task, skip_task) for Confetti jobs.
+) -> Tuple[OpTask, OpTask, OpTask]:
+    """Return ``(prepare_task, run_task, skip_task)`` for Confetti jobs.
 
-    ``prepare_task`` is a ``PythonOperator`` that sets up runtime configuration.
-    ``gate_task`` is a ``BranchPythonOperator`` that branches to ``run_task``
-    or ``skip_task`` depending on whether the downstream job should execute.
-    ``run_task`` and ``skip_task`` are ``EmptyOperator`` instances that can be
-    used to chain further tasks via ``>>``.
+    ``prepare_task`` is a ``BranchPythonOperator`` that sets up runtime
+    configuration and branches to either ``run_task`` or ``skip_task``.
+    ``run_task`` writes the ``_START`` marker and ``skip_task`` performs the
+    fast-pass copy used when the job is skipped. Both are ``PythonOperator``
+    instances that can be chained with ``>>``.
 
     ``task_id_prefix`` can be used to avoid duplicate task IDs when a single
     DAG instantiates multiple Confetti tasks for the same ``job_name``.
     """
 
-    def _prep(**context):
+    def _prep_and_branch(**context):
         rb, skip, jar = _prepare_runtime_config(
             group_name,
             job_name,
@@ -452,52 +448,53 @@ def make_confetti_tasks(
             experiment_name,
             check_timeout,
         )
-        context["ti"].xcom_push(key="confetti_runtime_config_base_path", value=rb)
-        context["ti"].xcom_push(key="skip_job", value=skip)
-        context["ti"].xcom_push(key="audienceJarPath", value=jar)
-        context["ti"].xcom_push(key="confetti_experiment_name", value=experiment_name or "")
-
-    prep_task = OpTask(op=PythonOperator(
-        task_id=f"{task_id_prefix}confetti_prepare_{job_name}",
-        python_callable=_prep,
-    ))
-
-    run_task = OpTask(op=EmptyOperator(task_id=f"{task_id_prefix}confetti_run_{job_name}"))
-    skip_task = OpTask(op=EmptyOperator(task_id=f"{task_id_prefix}confetti_skip_{job_name}"))
-
-    def _should_run(**context):
         ti = context["ti"]
-        skip = ti.xcom_pull(task_ids=prep_task.task_id, key="skip_job")
-        if not skip:
-            return run_task.task_id
+        ti.xcom_push(key="confetti_runtime_config_base_path", value=rb)
+        ti.xcom_push(key="skip_job", value=skip)
+        ti.xcom_push(key="audienceJarPath", value=jar)
+        ti.xcom_push(key="confetti_experiment_name", value=experiment_name or "")
+        return skip_task.task_id if skip else run_task.task_id
 
-        runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
-
-        try:
-            aws = AwsCloudStorage()
-            run_vars = _collect_job_run_level_variables(run_date=context.get("ds", run_date))
-            env = resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment_name)
-            tpl_dir = _template_dir(env, experiment_name, group_name, job_name)
-            out_tpl_key = tpl_dir + "output_config.yml"
-            tpl = aws.read_key(out_tpl_key, bucket_name=_CONFIG_BUCKET)
-            rendered = _render_template(tpl, run_vars)
-            current_out_path = yaml.safe_load(rendered)["out_path"]
-
-            runtime_out_key = runtime_base.rstrip("/") + "/output_config.yml"
-            stored_rendered = aws.read_key(runtime_out_key)
-            prev_out_path = yaml.safe_load(stored_rendered)["out_path"]
-
-            if prev_out_path != current_out_path:
-                _copy_s3_prefix(aws, prev_out_path, current_out_path)
-
-            return skip_task.task_id
-        except Exception as exc:  # pragma: no cover - unexpected failure
-            logger.exception("Fast pass copy failed: %s", exc)
-            return run_task.task_id
-
-    gate_task = OpTask(op=BranchPythonOperator(
-        task_id=f"{task_id_prefix}confetti_should_run_{job_name}",
-        python_callable=_should_run,
+    prep_task = OpTask(op=BranchPythonOperator(
+        task_id=f"{task_id_prefix}confetti_prepare_{job_name}",
+        python_callable=_prep_and_branch,
     ))
 
-    return prep_task, gate_task, run_task, skip_task
+    def _mark_start(**context: Any) -> None:
+        ti = context["ti"]
+        runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
+        experiment = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_experiment_name") or ""
+        base_key = runtime_base.replace(f"s3://{_CONFIG_BUCKET}/", "")
+        start_key = base_key.rstrip("/") + "/_START"
+        AwsCloudStorage().load_string(experiment, key=start_key, bucket_name=_CONFIG_BUCKET, replace=True)
+
+    run_task = OpTask(op=PythonOperator(
+        task_id=f"{task_id_prefix}confetti_run_{job_name}",
+        python_callable=_mark_start,
+    ))
+
+    def _fast_pass_copy(**context: Any) -> None:
+        ti = context["ti"]
+        runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
+        aws = AwsCloudStorage()
+        run_vars = _collect_job_run_level_variables(run_date=context.get("ds", run_date))
+        env = resolve_env(TtdEnvFactory.get_from_system().execution_env, experiment_name)
+        tpl_dir = _template_dir(env, experiment_name, group_name, job_name)
+        out_tpl_key = tpl_dir + "output_config.yml"
+        tpl = aws.read_key(out_tpl_key, bucket_name=_CONFIG_BUCKET)
+        rendered = _render_template(tpl, run_vars)
+        current_out_path = yaml.safe_load(rendered)["out_path"]
+
+        runtime_out_key = runtime_base.rstrip("/") + "/output_config.yml"
+        stored_rendered = aws.read_key(runtime_out_key)
+        prev_out_path = yaml.safe_load(stored_rendered)["out_path"]
+
+        if prev_out_path != current_out_path:
+            _copy_s3_prefix(aws, prev_out_path, current_out_path)
+
+    skip_task = OpTask(op=PythonOperator(
+        task_id=f"{task_id_prefix}confetti_skip_{job_name}",
+        python_callable=_fast_pass_copy,
+    ))
+
+    return prep_task, run_task, skip_task
