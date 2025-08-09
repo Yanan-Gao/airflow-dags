@@ -7,136 +7,14 @@ from unittest.mock import MagicMock, patch, call
 
 import yaml
 
-from ttd.confetti.confetti_task_factory import (  # noqa: E402
-    resolve_env,
-    _render_template,
-    _sha256_b64,
-    _inject_audience_jar_path,
-    _prepare_runtime_config,
-    _copy_s3_prefix,
-    make_confetti_tasks,
-    make_confetti_post_processing_task,
-)
-from ttd.tasks.op import OpTask
-
-# provide minimal airflow stubs so imports succeed
+# Minimal Airflow stubs so imports succeed without installing Airflow
 fake_airflow: Any = types.ModuleType("airflow")
 fake_ops: Any = types.ModuleType("airflow.operators")
 fake_py: Any = types.ModuleType("airflow.operators.python")
-fake_timetables: Any = types.ModuleType("airflow.timetables")
-fake_timetables_base: Any = types.ModuleType("airflow.timetables.base")
-fake_timetables_interval: Any = types.ModuleType("airflow.timetables.interval")
-fake_security: Any = types.ModuleType("airflow.security")
-fake_models: Any = types.ModuleType("airflow.models")
-fake_models_dag: Any = types.ModuleType("airflow.models.dag")
-fake_settings: Any = types.ModuleType("airflow.settings")
-fake_hooks: Any = types.ModuleType("airflow.hooks")
-fake_hooks_base: Any = types.ModuleType("airflow.hooks.base")
 fake_utils: Any = types.ModuleType("airflow.utils")
-fake_utils_trigger: Any = types.ModuleType("airflow.utils.trigger_rule")
 fake_utils_state: Any = types.ModuleType("airflow.utils.state")
-fake_ops_subdag: Any = types.ModuleType("airflow.operators.subdag")
-fake_utils_task_group: Any = types.ModuleType("airflow.utils.task_group")
-fake_ttdslack: Any = types.ModuleType("ttd.ttdslack")
-fake_pendulum_tz: Any = types.ModuleType("pendulum.tz.timezone")
-fake_pendulum_tz.FixedTimezone = type("FixedTimezone", (), {})
-fake_pendulum_tz.Timezone = type("Timezone", (), {})
-
-
-def dummy_slack_cb(*a, **k):
-    pass
-
-
-fake_ttdslack.dag_post_to_slack_callback = dummy_slack_cb
-
-
-class DummyDAG:
-
-    def __init__(self, *a, **k):
-        pass
-
-
-class DummyTimetable:
-    pass
-
-
-class DummyScheduleInterval:
-    pass
-
-
-class DummyDeltaTimetable:
-    pass
-
-
-class DummyCronTimetable:
-    pass
-
-
-class DummyDagRunInfo:
-    pass
-
-
-class DummyDataInterval:
-    pass
-
-
-class DummyTimeRestriction:
-    pass
-
-
-class DummyBaseHook:
-
-    @staticmethod
-    def get_connection(name):
-        return types.SimpleNamespace(password="token")
-
-
-class DummyTaskInstance:
-    pass
-
-
-class DummyDagRun:
-
-    def get_task_instances(self, state=None):
-        return []
-
-
-class DummySubDagOperator:
-
-    def __init__(self, *a, **k):
-        pass
-
-
-class DummyTaskGroup:
-
-    def __init__(self, *a, **k):
-        self.prefix_group_id = False
-
-    def add(self, obj):
-        pass
-
-    def child_id(self, tid):
-        return tid
-
-
-fake_airflow.DAG = DummyDAG
-fake_timetables_base.Timetable = DummyTimetable
-fake_models_dag.ScheduleInterval = DummyScheduleInterval
-fake_timetables_interval.DeltaDataIntervalTimetable = DummyDeltaTimetable
-fake_timetables_interval.CronDataIntervalTimetable = DummyCronTimetable
-fake_timetables_base.DagRunInfo = DummyDagRunInfo
-fake_timetables_base.DataInterval = DummyDataInterval
-fake_timetables_base.TimeRestriction = DummyTimeRestriction
-fake_hooks_base.BaseHook = DummyBaseHook
-fake_models.TaskInstance = DummyTaskInstance
-fake_models.DagRun = DummyDagRun
-fake_ops_subdag.SubDagOperator = DummySubDagOperator
-fake_utils_task_group.TaskGroup = DummyTaskGroup
-fake_utils_trigger.TriggerRule = type("TriggerRule", (), {})
-fake_utils_state.TaskInstanceState = type("TaskInstanceState", (), {"FAILED": "failed"})
-fake_utils_state.State = type("State", (), {"failed_states": ["failed"]})
-fake_security.permissions = types.SimpleNamespace()
-fake_settings.TIMEZONE = "UTC"
+fake_exceptions: Any = types.ModuleType("airflow.exceptions")
+fake_s3: Any = types.ModuleType("airflow.providers.amazon.aws.hooks.s3")
 
 
 class _DummyOp:
@@ -151,84 +29,63 @@ class _DummyOp:
 
 
 fake_py.PythonOperator = _DummyOp
-fake_py.ShortCircuitOperator = _DummyOp
+fake_py.BranchPythonOperator = _DummyOp
 fake_ops.python = fake_py
 fake_airflow.operators = fake_ops
-
-fake_exc: Any = types.ModuleType("airflow.exceptions")
-
-
-class DummyAirflowException(Exception):
-    pass
-
-
-fake_exc.AirflowException = DummyAirflowException
-
-fake_s3: Any = types.ModuleType("airflow.providers.amazon.aws.hooks.s3")
-
-
-class DummyS3Hook:
-
-    def __init__(self, *a, **k):
-        pass
-
-    def load_string(self, *a, **k):
-        pass
-
-    def load_file_obj(self, *a, **k):
-        pass
-
-    def check_for_key(self, *a, **k):
-        return False
-
-    def read_key(self, *a, **k):
-        return ""
-
-    def parse_s3_url(self, url):
-        return ("b", "k")
-
-    def get_conn(self):
-        return MagicMock()
-
-    def delete_objects(self, *a, **k):
-        pass
-
-    def list_keys(self, *a, **k):
-        return []
-
-    def list_prefixes(self, *a, **k):
-        return []
-
-
-fake_s3.S3Hook = DummyS3Hook
+fake_utils.state = fake_utils_state
+fake_utils_state.State = type("State", (), {"failed_states": ["failed"]})
+fake_exceptions.AirflowException = type("AirflowException", (Exception, ), {})
+fake_s3.S3Hook = type("S3Hook", (), {})
 
 sys.modules.setdefault("airflow", fake_airflow)
 sys.modules.setdefault("airflow.operators", fake_ops)
 sys.modules.setdefault("airflow.operators.python", fake_py)
-sys.modules.setdefault("airflow.exceptions", fake_exc)
-sys.modules.setdefault("airflow.timetables", fake_timetables)
-sys.modules.setdefault("airflow.timetables.base", fake_timetables_base)
-sys.modules.setdefault("airflow.timetables.interval", fake_timetables_interval)
-sys.modules.setdefault("airflow.security", fake_security)
-sys.modules.setdefault("airflow.models", fake_models)
-sys.modules.setdefault("airflow.models.dag", fake_models_dag)
-sys.modules.setdefault("airflow.settings", fake_settings)
-sys.modules.setdefault("airflow.hooks", fake_hooks)
-sys.modules.setdefault("airflow.hooks.base", fake_hooks_base)
 sys.modules.setdefault("airflow.utils", fake_utils)
-sys.modules.setdefault("airflow.utils.trigger_rule", fake_utils_trigger)
 sys.modules.setdefault("airflow.utils.state", fake_utils_state)
-sys.modules.setdefault("airflow.operators.subdag", fake_ops_subdag)
-sys.modules.setdefault("airflow.utils.task_group", fake_utils_task_group)
+sys.modules.setdefault("airflow.exceptions", fake_exceptions)
 sys.modules.setdefault("airflow.providers", types.ModuleType("airflow.providers"))
 sys.modules.setdefault("airflow.providers.amazon", types.ModuleType("airflow.providers.amazon"))
 sys.modules.setdefault("airflow.providers.amazon.aws", types.ModuleType("airflow.providers.amazon.aws"))
 sys.modules.setdefault("airflow.providers.amazon.aws.hooks", types.ModuleType("airflow.providers.amazon.aws.hooks"))
 sys.modules.setdefault("airflow.providers.amazon.aws.hooks.s3", fake_s3)
-sys.modules.setdefault("ttd.ttdslack", fake_ttdslack)
-sys.modules.setdefault("pendulum", types.ModuleType("pendulum"))
-sys.modules.setdefault("pendulum.tz", types.ModuleType("pendulum.tz"))
-sys.modules.setdefault("pendulum.tz.timezone", fake_pendulum_tz)
+
+# Provide a minimal ``OpTask`` implementation to avoid importing Airflow-heavy modules
+fake_tasks = types.ModuleType("ttd.tasks")
+fake_tasks_op = types.ModuleType("ttd.tasks.op")
+
+
+class OpTask:
+
+    def __init__(self, task_id: str | None = None, op: Any | None = None):
+        self._op = op
+        self.task_id = task_id or (op.task_id if op else None)
+
+    def first_airflow_op(self):
+        return self._op
+
+    def last_airflow_op(self):
+        return self._op
+
+
+fake_tasks_op.OpTask = OpTask  # type: ignore[attr-defined]
+fake_tasks.op = fake_tasks_op  # type: ignore[attr-defined]
+
+import ttd as _ttd  # noqa: E402
+
+sys.modules.setdefault("ttd.tasks", fake_tasks)
+sys.modules.setdefault("ttd.tasks.op", fake_tasks_op)
+_ttd.tasks = fake_tasks
+
+from ttd.confetti.confetti_task_factory import (  # noqa: E402
+    resolve_env,
+    _render_template,
+    _sha256_b64,
+    _inject_audience_jar_path,
+    _prepare_runtime_config,
+    _copy_s3_prefix,
+    make_confetti_tasks,
+    make_confetti_post_processing_task,
+)
 
 
 class ResolveEnvTest(unittest.TestCase):

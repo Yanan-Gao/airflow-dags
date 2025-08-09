@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, date
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 import logging
 from datetime import timedelta
 import base64
@@ -8,6 +8,9 @@ import hashlib
 import time
 # import os
 from typing import Tuple
+
+if TYPE_CHECKING:
+    from airflow.utils.context import Context
 import yaml
 
 from airflow.operators.python import PythonOperator, BranchPythonOperator
@@ -27,7 +30,7 @@ def _sha256_b64(data: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(data.encode("utf-8")).digest()).decode()
 
 
-def _render_template(tpl: str, run_level_variables: dict[str, str]) -> str:
+def _render_template(tpl: str, run_level_variables: Dict[str, str]) -> str:
     """Render ``tpl`` as a Jinja template using ``ctx``.
 
     ``StrictUndefined`` is used so that an informative error is raised if
@@ -473,7 +476,13 @@ def make_confetti_tasks(
         python_callable=_mark_start,
     ))
 
-    def _fast_pass_copy(**context: Any) -> None:
+    def _fast_pass_copy(**context: "Context") -> None:
+        """Copy prior outputs when skipping a run.
+
+        ``PythonOperator`` passes the Airflow context as keyword arguments, hence
+        the ``**context`` parameter.
+        """
+
         ti = context["ti"]
         runtime_base = ti.xcom_pull(task_ids=prep_task.task_id, key="confetti_runtime_config_base_path")
         aws = AwsCloudStorage()
